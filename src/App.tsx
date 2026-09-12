@@ -1,16 +1,15 @@
-import { useState } from 'react';
+import { useStore } from './ui/useStore';
 import { Home } from './ui/Home';
-import { sampleIncome, sampleExpenses } from './ui/sampleData';
-import { DEFAULT_SETTINGS, type Settings } from './core/types';
+import { T } from './ui/theme';
 
 export default function App() {
-  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  return (
-    <Home
-      income={sampleIncome}
-      expenses={sampleExpenses}
-      settings={settings}
-      onTaxPercentChange={(taxPercent) => setSettings((s) => ({ ...s, taxPercent }))}
-    />
-  );
+  const store = useStore();
+  if (store.loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: T.textMuted, fontSize: 13 }}>
+        Loading…
+      </div>
+    );
+  }
+  return <Home store={store} />;
 }
