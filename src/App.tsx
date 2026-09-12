@@ -1,5 +1,5 @@
 import { useStore } from './ui/useStore';
-import { Home } from './ui/Home';
+import { Shell } from './ui/Shell';
 import { T } from './ui/theme';
 
 export default function App() {
@@ -11,5 +11,5 @@ export default function App() {
       </div>
     );
   }
-  return <Home store={store} />;
+  return <Shell store={store} />;
 }
