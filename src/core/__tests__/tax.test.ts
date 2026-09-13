@@ -22,6 +22,8 @@ const settings = (taxPercent: number): Settings => ({
   business: '',
   taxPercent,
   defaultRatePence: 3500,
+  theme: 'light',
+  taxSavedPence: 0,
 });
 
 describe('deriveTotals', () => {
