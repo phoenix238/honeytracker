@@ -52,3 +52,9 @@ Phase 1 (this scaffold): project + tested core logic + a minimal Home. Next:
 3. **Full UI** — built from the agreed information architecture (four objects; Home / Money
    / Documents / More; bank and cash income pathways).
 4. **Importer** — one-time migration from the old app's data.
+
+## Deployment
+
+Live at Vercel, auto-deploying from `main` (project: `honeytracker-web` on the `phoenix`
+team). Every push to `main` builds and redeploys automatically once Vercel's Git connection
+picks it up.
