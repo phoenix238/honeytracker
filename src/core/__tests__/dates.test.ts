@@ -5,6 +5,7 @@ import {
   taxYearLabel,
   withinBounds,
   datesClose,
+  nextJan31,
 } from '../dates';
 
 describe('ukTaxYearStart', () => {
@@ -31,6 +32,15 @@ describe('withinBounds', () => {
     expect(withinBounds('2027-04-05', b)).toBe(true);
     expect(withinBounds('2026-04-05', b)).toBe(false);
     expect(withinBounds('2027-04-06', b)).toBe(false);
+  });
+});
+
+describe('nextJan31', () => {
+  it('stays within January, rolls to next year after', () => {
+    expect(nextJan31(new Date(2026, 0, 15))).toBe('2026-01-31');
+    expect(nextJan31(new Date(2026, 0, 31))).toBe('2026-01-31');
+    expect(nextJan31(new Date(2026, 1, 1))).toBe('2027-01-31');
+    expect(nextJan31(new Date(2026, 11, 31))).toBe('2027-01-31');
   });
 });
 

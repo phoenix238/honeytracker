@@ -70,3 +70,63 @@ export function OutIcon({ size = 16, color = 'currentColor' }: IconProps) {
     </svg>
   );
 }
+
+export function ChevronLeftIcon({ size = 18, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={2.75}>
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+export function ChevronRightIcon({ size = 18, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={2.75}>
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
+
+export function CheckIcon({ size = 16, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={3}>
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
+export function CameraIcon({ size = 22, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)}>
+      <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+      <circle cx="12" cy="13" r="4" />
+    </svg>
+  );
+}
+
+export function ClockIcon({ size = 18, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={2.75}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+export function PiggyBankIcon({ size = 20, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={2.75}>
+      <path d="M20 12V8H6a2 2 0 0 1 0-4h12v4" />
+      <path d="M4 6v12a2 2 0 0 0 2 2h14v-4" />
+      <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
+    </svg>
+  );
+}
+
+export function PlusIcon({ size = 16, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size, color)} strokeWidth={2.75}>
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}

@@ -43,3 +43,9 @@ export function datesClose(a: IsoDate, b: IsoDate, days = 6): boolean {
 export function today(now: Date = new Date()): IsoDate {
   return now.toISOString().slice(0, 10);
 }
+
+/** The next 31 January on or after `now` — the self-assessment balancing payment deadline. */
+export function nextJan31(now: Date = new Date()): IsoDate {
+  const year = now.getMonth() === 0 ? now.getFullYear() : now.getFullYear() + 1;
+  return `${year}-01-31`;
+}

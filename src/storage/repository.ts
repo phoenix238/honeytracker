@@ -1,4 +1,4 @@
-import type { Income, Expense, Settings } from '../core/types';
+import type { Income, Expense, Invoice, Settings } from '../core/types';
 import { DEFAULT_SETTINGS } from '../core/types';
 import { STORES, getAll, put, del, getKeyed, putKeyed } from './db';
 
@@ -28,6 +28,16 @@ export const repository = {
   async deleteExpense(expense: Expense): Promise<void> {
     await del(STORES.expenses, expense.id);
     if (expense.imageId) await del(STORES.images, expense.imageId);
+  },
+
+  async loadInvoices(): Promise<Invoice[]> {
+    return getAll<Invoice>(STORES.invoices);
+  },
+  async saveInvoice(invoice: Invoice): Promise<void> {
+    return put(STORES.invoices, invoice);
+  },
+  async deleteInvoice(id: string): Promise<void> {
+    return del(STORES.invoices, id);
   },
 
   async loadSettings(): Promise<Settings> {

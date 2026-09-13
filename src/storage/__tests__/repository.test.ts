@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { indexedDB } from 'fake-indexeddb';
 import { repository } from '../repository';
 import { _resetForTests } from '../db';
-import { DEFAULT_SETTINGS, type Income, type Expense } from '../../core/types';
+import { DEFAULT_SETTINGS, type Income, type Expense, type Invoice } from '../../core/types';
 
 // Each test gets a clean database: drop the cached connection and delete the store.
 beforeEach(async () => {
@@ -52,6 +52,25 @@ describe('repository — income & expenses', () => {
   it('starts empty', async () => {
     expect(await repository.loadIncome()).toEqual([]);
     expect(await repository.loadExpenses()).toEqual([]);
+  });
+});
+
+const invoice = (id: string, status: Invoice['status']): Invoice => ({
+  id,
+  number: 'HP-0001',
+  client: 'Sarah',
+  lines: [{ id: 'l1', label: 'Brand day', qty: 1, unitPence: 48000 }],
+  dueDate: '2026-05-15',
+  status,
+  createdAt: '2026-05-01T00:00:00Z',
+});
+
+describe('repository — invoices', () => {
+  it('round-trips and deletes an invoice', async () => {
+    await repository.saveInvoice(invoice('inv1', 'sent'));
+    expect(await repository.loadInvoices()).toHaveLength(1);
+    await repository.deleteInvoice('inv1');
+    expect(await repository.loadInvoices()).toEqual([]);
   });
 });
 

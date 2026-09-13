@@ -50,6 +50,14 @@ export interface Settings {
   /** Whole-percent set-aside rate, e.g. 20. Derivation divides by 100. */
   taxPercent: number;
   defaultRatePence: Pence;
+  /** 'light' or 'dark' — a fact the user chose, not derived. */
+  theme: 'light' | 'dark';
+  /**
+   * How much of the current tax stash the user has actually moved to a savings account, as of
+   * the last time they confirmed it. A fact, like everything else here — never recomputed
+   * backwards, only ratcheted forward by "Move to savings".
+   */
+  taxSavedPence: Pence;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -57,4 +65,33 @@ export const DEFAULT_SETTINGS: Settings = {
   business: '',
   taxPercent: 20,
   defaultRatePence: 3500,
+  theme: 'light',
+  taxSavedPence: 0,
 };
+
+export type InvoiceStatus = 'draft' | 'sent' | 'paid';
+
+export interface InvoiceLine {
+  id: string;
+  label: string;
+  qty: number;
+  unitPence: Pence;
+}
+
+/**
+ * A billing document. Optional and secondary to income by design (see README) — an invoice
+ * only becomes income when it's marked paid, which creates a real Income record alongside it.
+ */
+export interface Invoice {
+  id: string;
+  /** Display number, e.g. "HP-0143". */
+  number: string;
+  client: string;
+  clientEmail?: string;
+  lines: InvoiceLine[];
+  dueDate: IsoDate;
+  status: InvoiceStatus;
+  /** Set once status becomes 'paid', linking to the Income record it created. */
+  incomeId?: string;
+  createdAt: string;
+}

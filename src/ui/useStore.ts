@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Income, Expense, Settings } from '../core/types';
+import type { Income, Expense, Invoice, Settings } from '../core/types';
 import { repository } from '../storage/repository';
 
 // Local-first store. IndexedDB is loaded once on mount into React state, which is the fast
@@ -10,6 +10,7 @@ export interface Store {
   loading: boolean;
   income: Income[];
   expenses: Expense[];
+  invoices: Invoice[];
   settings: Settings;
   /** Non-empty when the last write failed; render it, don't hide it. */
   error: string;
@@ -18,6 +19,8 @@ export interface Store {
   removeIncome: (id: string) => Promise<void>;
   addExpense: (expense: Expense) => Promise<void>;
   removeExpense: (expense: Expense) => Promise<void>;
+  addInvoice: (invoice: Invoice) => Promise<void>;
+  updateInvoice: (invoice: Invoice) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
 }
 
@@ -31,6 +34,7 @@ export function useStore(): Store {
   const [loading, setLoading] = useState(true);
   const [income, setIncome] = useState<Income[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState('');
 
@@ -38,14 +42,16 @@ export function useStore(): Store {
     let live = true;
     (async () => {
       try {
-        const [i, e, s] = await Promise.all([
+        const [i, e, inv, s] = await Promise.all([
           repository.loadIncome(),
           repository.loadExpenses(),
+          repository.loadInvoices(),
           repository.loadSettings(),
         ]);
         if (!live) return;
         setIncome(i);
         setExpenses(e);
+        setInvoices(inv);
         setSettings(s);
       } catch {
         if (live) setError('Could not open local storage on this device.');
@@ -106,6 +112,30 @@ export function useStore(): Store {
     [expenses],
   );
 
+  const addInvoice = useCallback(async (record: Invoice) => {
+    setInvoices((prev) => [record, ...prev]);
+    try {
+      await repository.saveInvoice(record);
+    } catch (e) {
+      setInvoices((prev) => prev.filter((r) => r.id !== record.id));
+      setError(message(e));
+    }
+  }, []);
+
+  const updateInvoice = useCallback(
+    async (record: Invoice) => {
+      const previous = invoices;
+      setInvoices((prev) => prev.map((r) => (r.id === record.id ? record : r)));
+      try {
+        await repository.saveInvoice(record);
+      } catch (e) {
+        setInvoices(previous);
+        setError(message(e));
+      }
+    },
+    [invoices],
+  );
+
   const updateSettings = useCallback(
     async (patch: Partial<Settings>) => {
       const previous = settings;
@@ -125,6 +155,7 @@ export function useStore(): Store {
     loading: loading || settings === null,
     income,
     expenses,
+    invoices,
     settings: settings ?? ({} as Settings),
     error,
     clearError: () => setError(''),
@@ -132,6 +163,8 @@ export function useStore(): Store {
     removeIncome,
     addExpense,
     removeExpense,
+    addInvoice,
+    updateInvoice,
     updateSettings,
   };
 }
