@@ -3,7 +3,7 @@ import 'fake-indexeddb/auto';
 import { indexedDB } from 'fake-indexeddb';
 import { repository } from '../repository';
 import { _resetForTests } from '../db';
-import { DEFAULT_SETTINGS, type Income, type Expense, type Invoice } from '../../core/types';
+import { DEFAULT_SETTINGS, type Income, type Expense, type Invoice, type Client } from '../../core/types';
 
 // Each test gets a clean database: drop the cached connection and delete the store.
 beforeEach(async () => {
@@ -71,6 +71,17 @@ describe('repository — invoices', () => {
     expect(await repository.loadInvoices()).toHaveLength(1);
     await repository.deleteInvoice('inv1');
     expect(await repository.loadInvoices()).toEqual([]);
+  });
+});
+
+const client = (id: string): Client => ({ id, name: 'Sarah', createdAt: '2026-05-01T00:00:00Z' });
+
+describe('repository — clients', () => {
+  it('round-trips and deletes a client', async () => {
+    await repository.saveClient(client('c1'));
+    expect(await repository.loadClients()).toHaveLength(1);
+    await repository.deleteClient('c1');
+    expect(await repository.loadClients()).toEqual([]);
   });
 });
 

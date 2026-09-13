@@ -69,6 +69,16 @@ export const DEFAULT_SETTINGS: Settings = {
   taxSavedPence: 0,
 };
 
+/** A saved contact — so an invoice or log-work entry can pick a client instead of retyping them. */
+export interface Client {
+  id: string;
+  name: string;
+  email?: string;
+  /** Prefilled as the day/hour rate when this client is picked in Log work, if set. */
+  defaultRatePence?: Pence;
+  createdAt: string;
+}
+
 export type InvoiceStatus = 'draft' | 'sent' | 'paid';
 
 export interface InvoiceLine {

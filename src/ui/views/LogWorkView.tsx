@@ -2,15 +2,14 @@ import { useMemo, useState } from 'react';
 import { parsePence, formatAmount, formatGBP, percentOf } from '../../core/money';
 import { mkId } from '../../core/id';
 import { today } from '../../core/dates';
-import type { Income } from '../../core/types';
+import type { Income, IncomeMethod } from '../../core/types';
 import { fonts, pageBackground, type Theme } from '../theme';
 import { MoneyRings } from '../components/Rings';
 import { Glass } from '../components/Glass';
 import { FieldRow, TextFieldPill } from '../components/FieldRow';
 import { PillButton } from '../components/PillButton';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { Avatar } from '../components/Avatar';
-import { ChevronRightIcon } from '../icons';
+import { ClientPicker, type PickedClient } from '../components/ClientPicker';
 import type { Store } from '../useStore';
 
 type Mode = 'day' | 'hourly' | 'fixed';
@@ -21,7 +20,8 @@ function monthLabel(now: Date): string {
 
 export function LogWorkView({ store, T, onDone }: { store: Store; T: Theme; onDone: () => void }) {
   const { settings } = store;
-  const [client, setClient] = useState('');
+  const [client, setClient] = useState<PickedClient>({ name: '' });
+  const [method, setMethod] = useState<IncomeMethod>('bank');
   const [mode, setMode] = useState<Mode>('day');
   const [units, setUnits] = useState('1');
   const [rate, setRate] = useState(formatAmount(settings.defaultRatePence));
@@ -42,8 +42,8 @@ export function LogWorkView({ store, T, onDone }: { store: Store; T: Theme; onDo
       id: mkId(),
       date: today(),
       grossPence,
-      method: 'bank',
-      client: client.trim() || undefined,
+      method,
+      client: client.name.trim() || undefined,
       createdAt: new Date().toISOString(),
     };
     store.addIncome(record);
@@ -101,16 +101,16 @@ export function LogWorkView({ store, T, onDone }: { store: Store; T: Theme; onDo
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div>
           <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.textMuted, padding: '0 4px 6px' }}>Client</div>
-          <Glass T={T} pill style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px 10px 10px' }}>
-            <Avatar label={client || '?'} size={38} bg={T.ramp.accent2[T.mode === 'dark' ? 600 : 400]} color={T.mode === 'dark' ? T.ramp.accent2[100] : T.ramp.accent2[900]} />
-            <input
-              value={client}
-              onChange={(e) => setClient(e.target.value)}
-              placeholder="Who from"
-              style={{ flex: 1, background: 'none', border: 'none', outline: 'none', font: 'inherit', fontFamily: fonts.body, fontWeight: 700, fontSize: 14, color: T.text }}
-            />
-            <ChevronRightIcon size={18} color={T.textMuted} />
-          </Glass>
+          <ClientPicker
+            T={T}
+            clients={store.clients}
+            value={client}
+            onChange={(v) => {
+              setClient(v);
+              if (mode !== 'fixed' && v.defaultRatePence) setRate(formatAmount(v.defaultRatePence));
+            }}
+            onSaveClient={store.addClient}
+          />
         </div>
 
         <div>
@@ -158,6 +158,33 @@ export function LogWorkView({ store, T, onDone }: { store: Store; T: Theme; onDo
           <FieldRow T={T} label="" labelWidth={0}>
             <span style={{ fontWeight: 700, fontSize: 14, color: T.text }}>Today · {new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
           </FieldRow>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.textMuted, padding: '0 4px 6px' }}>Paid via</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(['bank', 'cash', 'other'] as IncomeMethod[]).map((m) => (
+              <span
+                key={m}
+                onClick={() => setMethod(m)}
+                style={{
+                  flex: 1,
+                  textAlign: 'center',
+                  padding: '9px 6px',
+                  borderRadius: 999,
+                  background: method === m ? T.accent + '22' : 'transparent',
+                  border: `1px solid ${method === m ? T.accent : T.border}`,
+                  color: method === m ? T.accent : T.textMuted,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textTransform: 'capitalize',
+                  cursor: 'pointer',
+                }}
+              >
+                {m}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
 

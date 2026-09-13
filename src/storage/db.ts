@@ -8,12 +8,13 @@
 //      Nothing here swallows an error.
 
 const DB_NAME = 'honeytracker';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export const STORES = {
   income: 'income',
   expenses: 'expenses',
   invoices: 'invoices',
+  clients: 'clients',
   meta: 'meta', // single-document store, e.g. settings under key "settings"
   images: 'images', // receipt photos as Blobs, keyed by image id
 } as const;
@@ -38,6 +39,7 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.income)) db.createObjectStore(STORES.income, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.expenses)) db.createObjectStore(STORES.expenses, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.invoices)) db.createObjectStore(STORES.invoices, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORES.clients)) db.createObjectStore(STORES.clients, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.meta)) db.createObjectStore(STORES.meta);
       if (!db.objectStoreNames.contains(STORES.images)) db.createObjectStore(STORES.images);
     };

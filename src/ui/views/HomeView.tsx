@@ -151,7 +151,7 @@ export function HomeView({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 9, padding: '10px 12px 0' }}>
         <PillButton T={T} onClick={onOpenLogWork} height={50} fontSize={15}>Log work</PillButton>
         <PillButton T={T} onClick={onOpenInvoice} variant="glass" height={50} fontSize={15}>Invoice</PillButton>
-        <PillButton T={T} onClick={onOpenReceipt} variant="glass" height={42} fontSize={13}>Receipt</PillButton>
+        <PillButton T={T} onClick={onOpenReceipt} variant="glass" height={42} fontSize={13}>Scan receipt</PillButton>
         <PillButton T={T} onClick={onOpenPaidIn} variant="glass" height={42} fontSize={13}>Paid in</PillButton>
       </div>
     </div>

@@ -7,7 +7,7 @@ import { fonts, pageBackground, type Theme } from '../theme';
 import { Glass } from '../components/Glass';
 import { PillButton } from '../components/PillButton';
 import { ScreenHeader } from '../components/ScreenHeader';
-import { Avatar } from '../components/Avatar';
+import { ClientPicker, type PickedClient } from '../components/ClientPicker';
 import { PlusIcon, ClockIcon } from '../icons';
 import type { Store } from '../useStore';
 
@@ -29,8 +29,7 @@ function lineAmount(l: DraftLine): number {
 }
 
 export function InvoiceView({ store, T, onDone }: { store: Store; T: Theme; onDone: () => void }) {
-  const [client, setClient] = useState('');
-  const [email, setEmail] = useState('');
+  const [client, setClient] = useState<PickedClient>({ name: '' });
   const [lines, setLines] = useState<DraftLine[]>([{ id: mkId(), label: '', qty: '1', rate: '' }]);
 
   const subtotal = useMemo(() => sumPence(lines.map(lineAmount)), [lines]);
@@ -44,7 +43,7 @@ export function InvoiceView({ store, T, onDone }: { store: Store; T: Theme; onDo
   const addLine = () => setLines((prev) => [...prev, { id: mkId(), label: '', qty: '1', rate: '' }]);
   const removeLine = (id: string) => setLines((prev) => (prev.length > 1 ? prev.filter((l) => l.id !== id) : prev));
 
-  const canSend = client.trim().length > 0 && subtotal > 0;
+  const canSend = client.name.trim().length > 0 && subtotal > 0;
 
   const send = () => {
     if (!canSend) return;
@@ -54,8 +53,8 @@ export function InvoiceView({ store, T, onDone }: { store: Store; T: Theme; onDo
     const invoice: Invoice = {
       id: mkId(),
       number,
-      client: client.trim(),
-      clientEmail: email.trim() || undefined,
+      client: client.name.trim(),
+      clientEmail: client.email,
       lines: invoiceLines,
       dueDate,
       status: 'sent',
@@ -78,26 +77,12 @@ export function InvoiceView({ store, T, onDone }: { store: Store; T: Theme; onDo
         }
       />
 
-      <Glass T={T} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px' }}>
-        <Avatar label={client || '?'} size={44} bg={T.ramp.accent2[T.mode === 'dark' ? 600 : 400]} color={T.mode === 'dark' ? T.ramp.accent2[100] : T.ramp.accent2[900]} />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <input
-            value={client}
-            onChange={(e) => setClient(e.target.value)}
-            placeholder="Client name"
-            style={{ background: 'none', border: 'none', outline: 'none', fontFamily: fonts.body, fontWeight: 700, fontSize: 15, color: T.text }}
-          />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: T.textMuted }}>
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="client@email.co"
-              style={{ background: 'none', border: 'none', outline: 'none', font: 'inherit', color: 'inherit', width: '55%' }}
-            />
-            <span>· {number}</span>
-          </div>
+      <div>
+        <ClientPicker T={T} clients={store.clients} value={client} onChange={setClient} onSaveClient={store.addClient} />
+        <div style={{ fontSize: 12, color: T.textMuted, padding: '4px 4px 0' }}>
+          {client.email ? `${client.email} · ` : ''}{number}
         </div>
-      </Glass>
+      </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <span style={{ fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.textMuted }}>Lines</span>

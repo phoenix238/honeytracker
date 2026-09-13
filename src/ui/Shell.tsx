@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { fonts, getTheme } from './theme';
 import { HomeIcon, MoneyIcon, DocsIcon, MoreIcon } from './icons';
 import { HomeView } from './views/HomeView';
@@ -22,11 +22,20 @@ const TABS: { id: Tab; label: string; icon: (p: { size?: number; color?: string 
   { id: 'more', label: 'More', icon: MoreIcon },
 ];
 
-export function Shell({ store }: { store: Store }) {
+export function Shell({ store, googleAuthStatus }: { store: Store; googleAuthStatus: 'idle' | 'connecting' | 'error' }) {
   const [tab, setTab] = useState<Tab>('home');
   const [subView, setSubView] = useState<SubView>(null);
   const T = getTheme(store.settings.theme);
   const closeSub = () => setSubView(null);
+
+  useEffect(() => {
+    if (googleAuthStatus !== 'idle') {
+      setTab('more');
+      setSubView(null);
+    }
+    // Only react to the OAuth callback resolving, not to ordinary tab navigation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleAuthStatus]);
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg, fontFamily: fonts.body, color: T.text }}>
@@ -62,7 +71,7 @@ export function Shell({ store }: { store: Store }) {
             )}
             {tab === 'money' && <MoneyView store={store} T={T} />}
             {tab === 'docs' && <DocsView store={store} T={T} />}
-            {tab === 'more' && <MoreView store={store} T={T} />}
+            {tab === 'more' && <MoreView store={store} T={T} googleAuthStatus={googleAuthStatus} />}
           </>
         )}
       </div>

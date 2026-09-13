@@ -1,8 +1,11 @@
 import { useRef, useState } from 'react';
-import { parsePence, formatAmount } from '../../core/money';
+import { parsePence, formatAmount, formatGBP } from '../../core/money';
+import { mkId } from '../../core/id';
 import { repository } from '../../storage/repository';
-import type { Income, Expense } from '../../core/types';
+import type { Income, Expense, Invoice, Client } from '../../core/types';
 import { fonts, type Theme } from '../theme';
+import { Avatar } from '../components/Avatar';
+import { beginGoogleAuth } from '../useGoogleOAuthCallback';
 import type { Store } from '../useStore';
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -14,11 +17,15 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-export function MoreView({ store, T }: { store: Store; T: Theme }) {
+export function MoreView({ store, T, googleAuthStatus }: { store: Store; T: Theme; googleAuthStatus: 'idle' | 'connecting' | 'error' }) {
   const { settings } = store;
   const [rate, setRate] = useState(formatAmount(settings.defaultRatePence));
   const fileRef = useRef<HTMLInputElement>(null);
   const [msg, setMsg] = useState('');
+  const [gmailMsg, setGmailMsg] = useState('');
+  const [newClientName, setNewClientName] = useState('');
+  const [newClientEmail, setNewClientEmail] = useState('');
+  const [newClientRate, setNewClientRate] = useState('');
 
   const inputStyle: React.CSSProperties = {
     background: T.bg,
@@ -39,6 +46,7 @@ export function MoreView({ store, T }: { store: Store; T: Theme }) {
       income: store.income,
       expenses: store.expenses,
       invoices: store.invoices,
+      clients: store.clients,
       settings: store.settings,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -60,6 +68,8 @@ export function MoreView({ store, T }: { store: Store; T: Theme }) {
         if (!window.confirm('Restore this backup? It adds its income and expenses to what you already have.')) return;
         for (const i of data.income as Income[]) await repository.saveIncome(i);
         for (const e of data.expenses as Expense[]) await repository.saveExpense(e);
+        for (const inv of (data.invoices ?? []) as Invoice[]) await repository.saveInvoice(inv);
+        for (const c of (data.clients ?? []) as Client[]) await repository.saveClient(c);
         if (data.settings) await repository.saveSettings(data.settings);
         window.location.reload();
       } catch {
@@ -131,6 +141,90 @@ export function MoreView({ store, T }: { store: Store; T: Theme }) {
             onBlur={() => store.updateSettings({ defaultRatePence: parsePence(rate) })}
           />
         </Row>
+      </div>
+
+      <div style={{ background: T.surface, border: `1px solid ${T.surfaceBorder}`, borderRadius: 20, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, color: T.text }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, color: T.textMuted, textTransform: 'uppercase' }}>Clients</div>
+        {store.clients.length === 0 ? (
+          <div style={{ fontSize: 12, color: T.textMuted }}>No saved clients yet — add one here, or the first time you pick "New client" on an invoice or log-work entry.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {store.clients.map((c) => (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 14, background: T.bg }}>
+                <Avatar label={c.name} size={30} bg={T.ramp.accent[T.mode === 'dark' ? 600 : 300]} color={T.mode === 'dark' ? T.ramp.accent[100] : T.ramp.accent[900]} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: T.textMuted }}>
+                    {c.email ? c.email + ' · ' : ''}{c.defaultRatePence ? `${formatGBP(c.defaultRatePence)} usual rate` : 'no usual rate'}
+                  </div>
+                </div>
+                <button onClick={() => store.removeClient(c.id)} aria-label={`Remove ${c.name}`} style={{ background: 'none', border: 'none', color: T.textFaint, cursor: 'pointer', fontSize: 16, padding: 4 }}>×</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input style={inputStyle} value={newClientName} onChange={(e) => setNewClientName(e.target.value)} placeholder="Name" />
+          <input style={inputStyle} value={newClientEmail} onChange={(e) => setNewClientEmail(e.target.value)} placeholder="Email (optional)" />
+          <button
+            onClick={() => {
+              if (!newClientName.trim()) return;
+              store.addClient({
+                id: mkId(),
+                name: newClientName.trim(),
+                email: newClientEmail.trim() || undefined,
+                defaultRatePence: newClientRate ? parsePence(newClientRate) : undefined,
+                createdAt: new Date().toISOString(),
+              });
+              setNewClientName('');
+              setNewClientEmail('');
+              setNewClientRate('');
+            }}
+            disabled={!newClientName.trim()}
+            style={{ flexShrink: 0, background: T.accent, color: T.accentOn, border: 'none', borderRadius: 999, padding: '0 16px', fontSize: 13, fontWeight: 700, cursor: newClientName.trim() ? 'pointer' : 'not-allowed', opacity: newClientName.trim() ? 1 : 0.5, fontFamily: fonts.display }}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      <div style={{ background: T.surface, border: `1px solid ${T.surfaceBorder}`, borderRadius: 20, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, color: T.text }}>
+        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 1, color: T.textMuted, textTransform: 'uppercase' }}>Integrations</div>
+        {store.googleAuth ? (
+          <>
+            <div style={{ fontSize: 12, color: T.textMuted }}>
+              Connected to Gmail{store.googleAuth.email ? ` as ${store.googleAuth.email}` : ''}.
+            </div>
+            <button
+              onClick={() => store.disconnectGoogle()}
+              style={{ background: 'transparent', color: T.danger, border: `1px solid ${T.danger}`, borderRadius: 999, padding: '10px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: fonts.body }}
+            >
+              Disconnect Gmail
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+              Connect Gmail to import expenses from receipt and invoice emails, from the Receipt screen.
+            </div>
+            <button
+              onClick={() => {
+                const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+                if (!clientId) {
+                  setGmailMsg('Gmail import is not configured on this deployment yet (missing VITE_GOOGLE_CLIENT_ID).');
+                  return;
+                }
+                beginGoogleAuth(clientId);
+              }}
+              style={{ background: T.accent, color: T.accentOn, border: 'none', borderRadius: 999, padding: '10px', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: fonts.display }}
+            >
+              Connect Gmail
+            </button>
+          </>
+        )}
+        {googleAuthStatus === 'connecting' && <div style={{ fontSize: 12, color: T.textMuted }}>Finishing Gmail sign-in…</div>}
+        {googleAuthStatus === 'error' && <div style={{ fontSize: 12, color: T.danger }}>Gmail sign-in didn't complete — try again.</div>}
+        {gmailMsg && <div style={{ fontSize: 12, color: T.danger }}>{gmailMsg}</div>}
       </div>
 
       <div style={{ background: T.surface, border: `1px solid ${T.surfaceBorder}`, borderRadius: 20, padding: 16, display: 'flex', flexDirection: 'column', gap: 10, color: T.text }}>
