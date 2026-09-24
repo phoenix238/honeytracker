@@ -5,8 +5,8 @@ import { txn } from './fixtures.js';
 
 const year = { from: '2026-04-06', to: '2027-04-05' };
 const streams: Stream[] = [
-  { id: 'cstl', name: 'CSTL', kind: 'self_employment', color: '#e0a92e', archived: false },
-  { id: 'refunds', name: 'Other', kind: 'other', color: '#888', archived: false },
+  { id: 'cstl', name: 'CSTL', kind: 'self_employment', color: '#e0a92e', archived: false, about: '' },
+  { id: 'refunds', name: 'Other', kind: 'other', color: '#888', archived: false, about: '' },
 ];
 
 describe('summarise', () => {

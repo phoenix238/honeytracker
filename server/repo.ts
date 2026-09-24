@@ -64,7 +64,7 @@ function toReceipt(r: Row): Receipt {
 }
 
 function toStream(r: Row): Stream {
-  return { id: s(r.id), name: s(r.name), kind: s(r.kind) as Stream['kind'], color: s(r.color), archived: Boolean(r.archived) };
+  return { id: s(r.id), name: s(r.name), kind: s(r.kind) as Stream['kind'], color: s(r.color), archived: Boolean(r.archived), about: s(r.about) };
 }
 
 function toRule(r: Row): Rule {
@@ -211,14 +211,15 @@ export function repo(db: Db) {
     async listStreams(): Promise<Stream[]> {
       return (await db.query<Row>('SELECT * FROM streams ORDER BY created_at')).map(toStream);
     },
-    async saveStream(st: Omit<Stream, 'id'> & { id?: string }): Promise<Stream> {
+    async saveStream(st: Omit<Stream, 'id' | 'about'> & { id?: string; about?: string }): Promise<Stream> {
       const id = st.id ?? mkId();
+      const about = st.about ?? '';
       await db.query(
-        `INSERT INTO streams (id, name, kind, color, archived, created_at) VALUES ($1,$2,$3,$4,$5,$6)
-         ON CONFLICT (id) DO UPDATE SET name=$2, kind=$3, color=$4, archived=$5`,
-        [id, st.name, st.kind, st.color, st.archived, now()],
+        `INSERT INTO streams (id, name, kind, color, archived, created_at, about) VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (id) DO UPDATE SET name=$2, kind=$3, color=$4, archived=$5, about=$7`,
+        [id, st.name, st.kind, st.color, st.archived, now(), about],
       );
-      return { id, name: st.name, kind: st.kind, color: st.color, archived: st.archived };
+      return { id, name: st.name, kind: st.kind, color: st.color, archived: st.archived, about };
     },
 
     // ── Rules ─────────────────────────────────────────────────────────────────────────

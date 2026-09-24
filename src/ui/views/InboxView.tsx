@@ -104,9 +104,11 @@ export function InboxView({ app }: { app: App }) {
       )}
       {app.aiProgress && (
         <Card style={{ borderColor: T.accent + '66' }}>
-          <Label color={T.accent}>AI sorting…</Label>
+          <Label color={T.accent}>{app.aiProgress.photos ? 'AI reading your old receipt photos…' : 'AI sorting…'}</Label>
           <div style={{ fontSize: 13, marginTop: 6 }}>
-            {app.aiProgress.sorted} sorted · about {app.aiProgress.remaining} to go. Keep this open; it works in batches of 40.
+            {app.aiProgress.photos
+              ? `${app.aiProgress.sorted} read · ${app.aiProgress.remaining} to go. Then it sorts. Keep this open.`
+              : `${app.aiProgress.sorted} sorted · about ${app.aiProgress.remaining} to go. Keep this open; it works in batches of 20, thinking each one through.`}
           </div>
         </Card>
       )}

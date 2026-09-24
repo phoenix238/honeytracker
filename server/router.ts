@@ -136,6 +136,9 @@ function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessP
 }
 
 /** Rows the AI may decide: unsorted, business with no stream yet, or flagged to re-stream. Never yours. */
+/** Set on photos brought over from the old app until the AI has read them. */
+const IMPORTED_UNREAD = 'Imported from Honey';
+
 function needsAi(t: Transaction): boolean {
   // Yours, or already decided by the AI and waiting for your check.
   if (t.classifiedBy === 'user' || t.classifiedBy === 'ai') return false;
@@ -260,6 +263,7 @@ const routes: [string, RegExp, Handler][] = [
     const name = str(b.name, 80).trim();
     if (!name) throw new HttpError(400, 'Give the stream a name');
     const stream: Omit<Stream, 'id'> & { id?: string } = {
+      about: str(b.about, 600).trim(),
       id: b.id ? str(b.id, 64) : undefined,
       name,
       kind: b.kind === 'other' ? 'other' : 'self_employment',
@@ -538,8 +542,8 @@ const routes: [string, RegExp, Handler][] = [
     const waiting = all.filter((t) => needsAi(t) && !t.meta.aiTried);
     const batch = waiting.slice(0, AI_SORT_BATCH);
     if (!batch.length) return json({ sorted: 0, skipped: 0, remaining: 0 });
-    const [streams, rules] = await Promise.all([r.listStreams(), r.listRules()]);
-    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all));
+    const [streams, rules, receipts] = await Promise.all([r.listStreams(), r.listRules(), r.listReceipts()]);
+    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all, 80, batch), receipts);
     let sorted = 0;
     for (const d of decisions) {
       const current = all.find((t) => t.id === d.id);
@@ -559,6 +563,23 @@ const routes: [string, RegExp, Handler][] = [
     const decided = new Set(decisions.map((d) => d.id));
     for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1', aiRestream: '' } });
     return json({ sorted, skipped: batch.length - sorted, remaining: waiting.length - batch.length });
+  }],
+  // Read the photos that came over from the old app (they were never read), a few per request,
+  // so the sorter knows what each one actually shows. Your old description and amount are kept.
+  ['POST', /^\/api\/ai\/read-receipts$/, async (_req, r) => {
+    if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI reading.');
+    const unread = (await r.listReceipts()).filter((x) => x.description === IMPORTED_UNREAD);
+    const batch = unread.slice(0, 4);
+    const results = await Promise.all(batch.map(async (rc) => {
+      const file = await r.getReceiptFile(rc.id);
+      const got = file ? await extractReceipt(rc.mime, file.data.toString('base64')).catch(() => null) : null;
+      const shows = got ? [got.merchant, got.description].filter(Boolean).join(' — ') : '';
+      await r.updateReceipt(rc.id, got && shows
+        ? { description: `Photo shows: ${shows.slice(0, 280)}`, suggestedCategory: rc.suggestedCategory ?? got.category, vatPence: rc.vatPence ?? got.vatPence }
+        : { description: `${IMPORTED_UNREAD} (photo unreadable)` });
+      return Boolean(got && shows);
+    }));
+    return json({ read: results.filter(Boolean).length, tried: batch.length, remaining: unread.length - batch.length });
   }],
   // Rewind the AI: every row it sorted goes back to how it was before, and the skipped ones
   // are offered again. Rows you changed by hand after the AI stay as you left them.
@@ -635,7 +656,7 @@ const routes: [string, RegExp, Handler][] = [
       const m = /^data:(image\/(?:jpeg|png|webp|gif)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(str(it.imageDataUrl, 8_000_000));
       if (m) {
         const saved = await r.insertReceipt(
-          { filename: `${str(it.label, 60) || 'receipt'}.jpg`, mime: m[1]!, merchant: str(it.label, 200), date: it.date, totalPence: it.amountPence, vatPence: null, suggestedCategory: isIncome ? null : category, description: 'Imported from Honey', transactionId: txnId },
+          { filename: `${str(it.label, 60) || 'receipt'}.jpg`, mime: m[1]!, merchant: str(it.label, 200), date: it.date, totalPence: it.amountPence, vatPence: null, suggestedCategory: isIncome ? null : category, description: IMPORTED_UNREAD, transactionId: txnId },
           m[2]!,
           `${it.sourceId}:image`,
         );

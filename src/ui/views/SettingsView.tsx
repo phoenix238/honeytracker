@@ -51,7 +51,10 @@ function StreamsSection({ app }: { app: App }) {
       {data.streams.map((s) => (
         <Card key={s.id} style={{ padding: 12, display: 'flex', alignItems: 'center', gap: 10, opacity: s.archived ? 0.5 : 1 }} onClick={() => setEditing(s)}>
           <span style={{ width: 12, height: 12, borderRadius: 6, background: s.color }} />
-          <span style={{ flex: 1, fontWeight: 600 }}>{s.name}</span>
+          <span style={{ flex: 1, fontWeight: 600 }}>
+            {s.name}
+            {data.config.aiSort && !s.about && !s.archived && <span style={{ display: 'block', fontSize: 11, fontWeight: 400, color: T.accent }}>Tap to describe it — the AI sorts much better</span>}
+          </span>
           <span style={{ fontSize: 11, color: T.textMuted }}>
             {s.kind === 'other' ? 'Not taxed here' : 'Self-employment'}
             {data.settings.cstlStreamId === s.id ? ' · CSTL' : ''}
@@ -65,7 +68,7 @@ function StreamsSection({ app }: { app: App }) {
           tone="primary"
           disabled={!name.trim() || app.busy}
           onClick={async () => {
-            await app.saveStream({ name: name.trim(), kind: 'self_employment', color: COLORS[data.streams.length % COLORS.length]!, archived: false });
+            await app.saveStream({ name: name.trim(), kind: 'self_employment', color: COLORS[data.streams.length % COLORS.length]!, archived: false, about: '' });
             setName('');
           }}
         >
@@ -76,6 +79,14 @@ function StreamsSection({ app }: { app: App }) {
         <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <Field label="Name">
             <input style={inputStyle} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} />
+          </Field>
+          <Field label="What this work is" hint="The AI reads this to tell your streams apart. Say who pays you, how, roughly how much, and what you spend on it.">
+            <textarea
+              style={{ ...inputStyle, minHeight: 84, resize: 'vertical' }}
+              placeholder="e.g. Craniosacral sessions. Clients pay £60–70 by bank transfer, reference is usually their name. Costs: couch roll, oils, CPD courses, clinic room hire."
+              value={editing.about}
+              onChange={(e) => setEditing({ ...editing, about: e.target.value })}
+            />
           </Field>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Chip active={editing.kind === 'self_employment'} onClick={() => setEditing({ ...editing, kind: 'self_employment' })}>Self-employment</Chip>

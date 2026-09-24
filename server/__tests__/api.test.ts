@@ -593,3 +593,33 @@ describe('undo AI sorting', () => {
     delete process.env.ANTHROPIC_API_KEY;
   });
 });
+
+describe('what the AI gets to read', () => {
+  it('reads old receipt photos once, then sorts with your descriptions, the photo contents and what each stream is', async () => {
+    await signIn();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    await call('POST', '/api/streams', { name: 'Cranio', about: 'Craniosacral sessions; costs are couch roll and oils' });
+    await call('POST', '/api/streams', { name: 'Coffee', about: 'Barista shifts at Bean There' });
+    feed.push(item('p1', 45, 'OUT', daysAgo(3), { counterPartyName: 'AMAZON' }));
+    await call('POST', '/api/sync', {});
+    const png = 'data:image/png;base64,' + Buffer.from('fake-png').toString('base64');
+    await call('POST', '/api/import', {
+      items: [{ sourceId: 'honeypot:receipt:p1', kind: 'expense', date: daysAgo(3).slice(0, 10), amountPence: 4500, label: 'Massage oil bulk', category: null, imageDataUrl: png }],
+      streamId: null,
+    });
+
+    aiReply = () => ({ merchant: 'Amazon', date: '', total: '45.00', vat: '7.50', currency: 'GBP', category: 'costOfGoods', description: '5L grapeseed massage oil' });
+    const read = await call('POST', '/api/ai/read-receipts', {});
+    expect(read.data).toMatchObject({ read: 1, remaining: 0 });
+    expect((await call('POST', '/api/ai/read-receipts', {})).data.tried).toBe(0); // never read twice
+
+    let prompt = '';
+    aiReply = (p) => { prompt = p; return { results: [] }; };
+    await call('POST', '/api/ai/sort', {});
+    expect(prompt).toContain('Craniosacral sessions; costs are couch roll and oils');
+    expect(prompt).toContain('their description: "Massage oil bulk"');
+    expect(prompt).toContain('5L grapeseed massage oil');
+    expect(prompt).toContain('AMAZON');
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+});

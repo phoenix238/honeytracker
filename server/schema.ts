@@ -11,6 +11,7 @@ export const SCHEMA: string[] = [
     archived boolean NOT NULL DEFAULT false,
     created_at text NOT NULL
   )`,
+  `ALTER TABLE streams ADD COLUMN IF NOT EXISTS about text NOT NULL DEFAULT ''`,
   `CREATE TABLE IF NOT EXISTS transactions (
     id text PRIMARY KEY,
     date text NOT NULL,

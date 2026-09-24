@@ -44,7 +44,7 @@ export interface App {
   payInvoice: (id: string, body: Parameters<typeof api.payInvoice>[1]) => Promise<boolean>;
   unpayInvoice: (id: string) => Promise<boolean>;
   /** Progress of an AI sort in flight: rows sorted so far, and roughly how many left. */
-  aiProgress: { sorted: number; remaining: number } | null;
+  aiProgress: { sorted: number; remaining: number; photos?: boolean } | null;
   aiSortAll: () => Promise<void>;
   /** Rewind everything the AI sorted that you haven't changed by hand. */
   aiUndo: () => Promise<void>;
@@ -62,7 +62,7 @@ export function useApp(): App {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(0);
-  const [aiProgress, setAiProgress] = useState<{ sorted: number; remaining: number } | null>(null);
+  const [aiProgress, setAiProgress] = useState<{ sorted: number; remaining: number; photos?: boolean } | null>(null);
   const flushing = useRef(false);
 
   const fail = useCallback((e: unknown) => {
@@ -297,6 +297,16 @@ export function useApp(): App {
       let sorted = 0;
       setAiProgress({ sorted: 0, remaining: app_unreviewed(data) });
       try {
+        // First read any photos from the old app that haven't been read, so the sorter knows
+        // what each one shows.
+        let read = 0;
+        for (;;) {
+          const p = await api.aiReadReceipts();
+          read += p.tried;
+          if (p.remaining === 0 || p.tried === 0) break;
+          setAiProgress({ sorted: read, remaining: p.remaining, photos: true });
+        }
+        setAiProgress({ sorted: 0, remaining: app_unreviewed(data) });
         // One batch per request, until nothing's left — each request stays short.
         for (;;) {
           const r = await api.aiSort();

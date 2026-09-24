@@ -97,6 +97,7 @@ export const api = {
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
 
   aiRestreamImports: () => call<{ marked: number }>('POST', '/api/ai/restream-imports', {}),
+  aiReadReceipts: () => call<{ read: number; tried: number; remaining: number }>('POST', '/api/ai/read-receipts', {}),
   aiUndo: () => call<{ undone: number; kept: number; cleared: number }>('POST', '/api/ai/undo', {}),
   aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 

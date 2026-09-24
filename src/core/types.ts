@@ -66,6 +66,8 @@ export interface Stream {
   kind: StreamKind;
   color: string;
   archived: boolean;
+  /** What this work is, in your words — the AI reads it to tell the streams apart. */
+  about: string;
 }
 
 /** HMRC's expense categories, keyed by the field names Making Tax Digital uses. */
