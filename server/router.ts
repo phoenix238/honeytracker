@@ -576,12 +576,12 @@ const routes: [string, RegExp, Handler][] = [
     const bank = (await r.listTransactions()).filter((t) => t.source === 'starling');
     // Bank rows already claimed by an earlier import batch stay claimed.
     const claimed = new Set(bank.filter((t) => t.meta.importedFrom).map((t) => t.id));
-    const out = { linked: 0, created: 0, skipped: 0, receipts: 0 };
+    const out = { linked: 0, created: 0, skipped: 0, already: 0, unreadable: 0, receipts: 0 };
     for (const it of items) {
-      if (!isDate(it.date) || !Number.isInteger(it.amountPence) || it.amountPence <= 0) { out.skipped++; continue; }
-      if (await r.findBySource('import', str(it.sourceId, 120))) { out.skipped++; continue; }
+      if (!isDate(it.date) || !Number.isInteger(it.amountPence) || it.amountPence <= 0) { out.skipped++; out.unreadable++; continue; }
+      if (await r.findBySource('import', str(it.sourceId, 120))) { out.skipped++; out.already++; continue; }
       const already = bank.find((t) => t.meta.importedFrom === it.sourceId);
-      if (already) { out.skipped++; continue; }
+      if (already) { out.skipped++; out.already++; continue; }
       const twin = findBankTwin(it, bank, claimed);
       const isIncome = it.kind === 'income';
       const category = isCategory(it.category) ? it.category : 'otherExpenses';
@@ -603,7 +603,7 @@ const routes: [string, RegExp, Handler][] = [
           category: isIncome ? null : category, businessPercent: 100,
           note: 'Imported from Honey — not found in the bank feed (cash, or another account?)', classifiedBy: 'import', meta: { importedFrom: it.sourceId },
         });
-        if (!created) { out.skipped++; continue; }
+        if (!created) { out.skipped++; out.already++; continue; }
         txnId = created.id;
         out.created++;
       }

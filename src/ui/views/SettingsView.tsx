@@ -165,7 +165,7 @@ function ImportSection({ app }: { app: App }) {
   const [importing, setImporting] = useState(false);
 
   const send = async (items: ImportedItem[]) => {
-    const totals = { linked: 0, created: 0, skipped: 0, receipts: 0, bigPhotos: 0 };
+    const totals = { linked: 0, created: 0, already: 0, unreadable: 0, receipts: 0, bigPhotos: 0 };
     // A single photo bigger than a request can carry would fail the whole batch: keep the
     // record, drop just that photo.
     const safeItems = items.map((it) => {
@@ -188,12 +188,15 @@ function ImportSection({ app }: { app: App }) {
       const r = await api.importItems(batch, streamId);
       totals.linked += r.linked;
       totals.created += r.created;
-      totals.skipped += r.skipped;
+      totals.already += r.already;
+      totals.unreadable += r.unreadable;
       totals.receipts += r.receipts;
     }
     const done =
       `Import done: ${totals.linked} matched to bank lines, ${totals.created} added (not found in the bank feed — check these), ` +
-      `${totals.receipts} receipt photos, ${totals.skipped} already imported or unreadable` +
+      `${totals.receipts} receipt photos` +
+      (totals.already ? `, ${totals.already} already imported earlier (skipped, nothing doubled)` : '') +
+      (totals.unreadable ? `, ${totals.unreadable} unreadable (no valid date or amount)` : '') +
       (totals.bigPhotos ? `, ${totals.bigPhotos} photos too large to bring over (their records came in without them)` : '') +
       '.';
     setStatus(done);

@@ -294,7 +294,7 @@ describe('import from the old app', () => {
     const first = await call('POST', '/api/import', { items, streamId: null });
     expect(first.data).toMatchObject({ linked: 1, created: 2, receipts: 1 });
     const second = await call('POST', '/api/import', { items, streamId: null });
-    expect(second.data).toMatchObject({ linked: 0, created: 0, skipped: 3 });
+    expect(second.data).toMatchObject({ linked: 0, created: 0, skipped: 3, already: 3, unreadable: 0 });
     const { data } = await call('GET', '/api/state');
     expect(data.transactions).toHaveLength(3);
     expect(data.transactions.find((t: Transaction) => t.sourceId === 'f1').bucket).toBe('business_income');

@@ -100,7 +100,7 @@ export const api = {
   aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 
   importItems: (items: ImportedItem[], streamId: string | null) =>
-    call<{ linked: number; created: number; skipped: number; receipts: number }>('POST', '/api/import', { items, streamId }),
+    call<{ linked: number; created: number; skipped: number; already: number; unreadable: number; receipts: number }>('POST', '/api/import', { items, streamId }),
 };
 
 export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;
