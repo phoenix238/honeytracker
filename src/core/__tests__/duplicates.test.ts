@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findDuplicates } from '../duplicates';
+import { findDuplicates } from '../duplicates.js';
 
 interface Row {
   id: string;

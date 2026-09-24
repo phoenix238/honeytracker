@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePence, formatAmount, formatGBP, percentOf, sumPence } from '../money';
+import { parsePence, formatAmount, formatGBP, percentOf, sumPence } from '../money.js';
 
 describe('parsePence', () => {
   it('parses plain and messy user input to whole pence', () => {
