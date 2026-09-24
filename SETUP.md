@@ -1,7 +1,12 @@
 # Honey — setup
 
-About 30 minutes, once. The app already deploys to Vercel from `main` (project
-`honeytracker-web`); this adds the database, the bank feed and the links.
+About 30 minutes, once.
+
+## 0. The Vercel project (3 min)
+
+vercel.com → **Add New… → Project** → import `phoenix238/honeytracker` → Framework
+preset **Vite** (detected) → **Deploy**. It will show a setup screen until steps 1–2 are
+done. Every push to `main` redeploys; every branch gets a preview URL.
 
 Everything below is an **environment variable** in Vercel → the project → Settings →
 Environment Variables. After adding any, redeploy (Deployments → ⋯ → Redeploy).
