@@ -162,36 +162,67 @@ function ImportSection({ app }: { app: App }) {
   const [streamId, setStreamId] = useState<string | null>(aiStreams ? null : data.streams[0]?.id ?? null);
   const [status, setStatus] = useState('');
 
+  const [importing, setImporting] = useState(false);
+
   const send = async (items: ImportedItem[]) => {
-    const totals = { linked: 0, created: 0, skipped: 0, receipts: 0 };
+    const totals = { linked: 0, created: 0, skipped: 0, receipts: 0, bigPhotos: 0 };
+    // A single photo bigger than a request can carry would fail the whole batch: keep the
+    // record, drop just that photo.
+    const safeItems = items.map((it) => {
+      if ((it.imageDataUrl?.length ?? 0) > 3_000_000) {
+        totals.bigPhotos++;
+        return { ...it, imageDataUrl: null };
+      }
+      return it;
+    });
     // Small batches: old receipts carry their photos inline, and requests have a size limit.
-    for (let i = 0; i < items.length; ) {
+    for (let i = 0; i < safeItems.length; ) {
       const batch: ImportedItem[] = [];
       let size = 0;
-      while (i < items.length && batch.length < 50 && size < 3_000_000) {
-        const it = items[i++]!;
+      while (i < safeItems.length && batch.length < 40 && size < 3_000_000) {
+        const it = safeItems[i++]!;
         batch.push(it);
         size += (it.imageDataUrl?.length ?? 0) + 300;
       }
-      setStatus(`Importing ${Math.min(i, items.length)} of ${items.length}…`);
+      setStatus(`Importing ${Math.min(i, safeItems.length)} of ${safeItems.length}… keep this screen open.`);
       const r = await api.importItems(batch, streamId);
       totals.linked += r.linked;
       totals.created += r.created;
       totals.skipped += r.skipped;
       totals.receipts += r.receipts;
     }
-    setStatus(
-      `Done: ${totals.linked} matched to bank lines, ${totals.created} added (not in the bank feed — check these), ${totals.receipts} receipt photos, ${totals.skipped} already imported or unreadable.`,
-    );
+    const done =
+      `Import done: ${totals.linked} matched to bank lines, ${totals.created} added (not found in the bank feed — check these), ` +
+      `${totals.receipts} receipt photos, ${totals.skipped} already imported or unreadable` +
+      (totals.bigPhotos ? `, ${totals.bigPhotos} photos too large to bring over (their records came in without them)` : '') +
+      '.';
+    setStatus(done);
+    app.notify(done);
     await app.reload();
   };
 
   const fromFile = async (file: File) => {
+    setImporting(true);
+    setStatus(`Reading ${file.name}…`);
     try {
-      const items = parseHoneypotBackup(JSON.parse(await file.text()));
+      let raw: unknown;
+      try {
+        raw = JSON.parse(await file.text());
+      } catch {
+        throw new Error(`“${file.name}” isn’t a Honey backup — it couldn’t be read as a backup file. In the old app use Settings → Export backup, and pick the .json file it saves.`);
+      }
+      const items = parseHoneypotBackup(raw);
+      const income = items.filter((i) => i.kind === 'income').length;
+      const expenses = items.length - income;
+      const photos = items.filter((i) => i.imageDataUrl).length;
+      setStatus(`Found ${income} paid income records and ${expenses} business expenses (${photos} with photos). Importing…`);
       await send(items);
     } catch (e) {
-      setStatus((e as Error).message);
+      const msg = `Import didn’t finish: ${(e as Error).message}`;
+      setStatus(msg);
+      app.notify(msg);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -223,10 +254,16 @@ function ImportSection({ app }: { app: App }) {
             </div>
           </Field>
         )}
-        <input ref={fileRef} type="file" accept="application/json,.json" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void fromFile(f); }} />
-        <Button onClick={() => fileRef.current?.click()}>Import a Honey backup file (Honeypot0101 → Export backup)</Button>
+        <input ref={fileRef} type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void fromFile(f); }} />
+        <Button tone="primary" disabled={importing} onClick={() => fileRef.current?.click()}>
+          {importing ? 'Importing…' : 'Import a Honey backup file (Honeypot0101 → Export backup)'}
+        </Button>
         <Button onClick={fromDevice}>Upload records saved on this device by the earlier version</Button>
-        {status && <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5 }}>{status}</div>}
+        {status && (
+          <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5, background: T.bg, border: `1px solid ${status.startsWith('Import didn') ? T.danger : T.accent}`, borderRadius: 10, padding: '10px 12px' }}>
+            {status}
+          </div>
+        )}
         {data.config.aiSort && data.transactions.some((t) => t.classifiedBy === 'import') && (
           <Button
             disabled={app.busy || Boolean(app.aiProgress)}
