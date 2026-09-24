@@ -58,6 +58,8 @@ const line = (t: Transaction) =>
     t.meta.starlingSource ? `via ${t.meta.starlingSource}` : '',
     t.meta.spendingCategory ? `bank category ${t.meta.spendingCategory}` : '',
     t.meta.account ? `account ${t.meta.account}` : '',
+    t.source === 'import' ? 'recorded in their old app' : '',
+    t.bucket !== 'unreviewed' ? `already known: ${t.bucket.replace('_', ' ')}${t.category ? ` (${t.category})` : ''} — needs a stream` : '',
   ]
     .filter(Boolean)
     .join(' | ');
@@ -77,6 +79,8 @@ For each transaction, decide:
 - businessPercent: for business_expense, the share that's business use (100 unless it's clearly mixed, e.g. a phone contract); 100 otherwise.
 - confidence: high only when it's obvious; low when you're guessing — the person will check low ones first.
 - reason: a few words explaining the choice.
+
+Some rows are already known to be business income or costs and only need the right stream (and category): keep them as business unless clearly not, and choose the stream from who paid and what the work was.
 
 When unsure whether something is business, prefer personal with low confidence — claiming a personal cost as business is the more harmful mistake. Money arriving from a person or company that isn't the account holder, especially with an invoice number or reference, is usually business income.
 
@@ -151,6 +155,9 @@ export function pickExamples(txns: readonly Transaction[], max = 60): Transactio
   const ordered = [...txns.filter((t) => t.classifiedBy === 'user'), ...txns.filter((t) => t.classifiedBy === 'import')];
   for (const t of ordered) {
     if (!mine(t) || t.bucket === 'unreviewed' || !(t.counterparty || t.reference)) continue;
+    // An import whose stream is missing or being re-chosen would teach the wrong stream.
+    const business = t.bucket === 'business_income' || t.bucket === 'business_expense';
+    if (t.classifiedBy === 'import' && business && (!t.streamId || t.meta.aiRestream === '1')) continue;
     const key = `${t.direction}:${(t.counterparty || t.reference).toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);

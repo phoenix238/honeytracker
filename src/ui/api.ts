@@ -96,6 +96,7 @@ export const api = {
   invoiceCandidates: (id: string) => call<Transaction[]>('GET', `/api/invoices/${id}/candidates`),
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
 
+  aiRestreamImports: () => call<{ marked: number }>('POST', '/api/ai/restream-imports', {}),
   aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 
   importItems: (items: ImportedItem[], streamId: string | null) =>

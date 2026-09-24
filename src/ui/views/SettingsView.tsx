@@ -157,7 +157,9 @@ function RulesSection({ app }: { app: App }) {
 function ImportSection({ app }: { app: App }) {
   const data = app.data!;
   const fileRef = useRef<HTMLInputElement>(null);
-  const [streamId, setStreamId] = useState<string | null>(data.streams[0]?.id ?? null);
+  // With several streams the old app can't say which is which, so by default the AI decides.
+  const aiStreams = data.config.aiSort && data.streams.filter((s) => !s.archived).length > 1;
+  const [streamId, setStreamId] = useState<string | null>(aiStreams ? null : data.streams[0]?.id ?? null);
   const [status, setStatus] = useState('');
 
   const send = async (items: ImportedItem[]) => {
@@ -214,9 +216,10 @@ function ImportSection({ app }: { app: App }) {
           Sync the bank first, so old records can be matched to their bank lines instead of counted twice. Anything with no bank line (cash) is added and marked for you to check.
         </div>
         {data.streams.length > 0 && (
-          <Field label="File imported income under">
+          <Field label="File imported income and costs under" hint={streamId === null ? 'Each record comes in with no stream; then tap “Sort with AI” in Money and it picks the stream for each one, for you to check.' : 'Everything imported goes under this one stream.'}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {data.streams.map((s) => <Chip key={s.id} active={streamId === s.id} color={s.color} onClick={() => setStreamId(s.id)}>{s.name}</Chip>)}
+              <Chip active={streamId === null} color={T.green} onClick={() => setStreamId(null)}>{data.config.aiSort ? '🤖 Sort streams later (AI)' : 'Decide later'}</Chip>
+              {data.streams.filter((s) => !s.archived).map((s) => <Chip key={s.id} active={streamId === s.id} color={s.color} onClick={() => setStreamId(s.id)}>{s.name}</Chip>)}
             </div>
           </Field>
         )}
@@ -224,6 +227,21 @@ function ImportSection({ app }: { app: App }) {
         <Button onClick={() => fileRef.current?.click()}>Import a Honey backup file (Honeypot0101 → Export backup)</Button>
         <Button onClick={fromDevice}>Upload records saved on this device by the earlier version</Button>
         {status && <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5 }}>{status}</div>}
+        {data.config.aiSort && data.transactions.some((t) => t.classifiedBy === 'import') && (
+          <Button
+            disabled={app.busy || Boolean(app.aiProgress)}
+            onClick={async () => {
+              if (!window.confirm('Put every imported record back through the AI to choose its stream? You’ll check its choices under Money → AI: check.')) return;
+              const r = await api.aiRestreamImports().catch((e: Error) => { setStatus(e.message); return null; });
+              if (!r) return;
+              setStatus(`${r.marked} imported records queued — sorting now…`);
+              await app.aiSortAll();
+              setStatus('Done — check the results under Money → AI: check.');
+            }}
+          >
+            🤖 Let AI re-sort the streams of imported records
+          </Button>
+        )}
         <Label>Export</Label>
         <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV from the Tax tab.</div>
       </Card>

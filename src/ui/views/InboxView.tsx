@@ -44,6 +44,13 @@ export function InboxView({ app }: { app: App }) {
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
   const unreviewed = data.transactions.filter((t) => t.bucket === 'unreviewed');
+  // What the AI will look at: unsorted lines, plus business lines still missing a stream.
+  const aiQueue = data.transactions.filter(
+    (t) =>
+      t.classifiedBy !== 'user' &&
+      !t.meta.aiTried &&
+      (t.bucket === 'unreviewed' || ((t.bucket === 'business_income' || t.bucket === 'business_expense') && (!t.streamId || t.meta.aiRestream === '1'))),
+  ).length;
 
   const nextUnreviewed = () => {
     // The row just saved has left the queue; move to the next one still in it.
@@ -75,9 +82,9 @@ export function InboxView({ app }: { app: App }) {
         </Button>
       )}
 
-      {data.config.aiSort && unreviewed.length > 0 && !app.aiProgress && (
+      {data.config.aiSort && aiQueue > 0 && !app.aiProgress && (
         <Button onClick={app.aiSortAll} disabled={app.busy}>
-          🤖 Sort {unreviewed.length} with AI, then I’ll check
+          🤖 Sort {aiQueue} with AI, then I’ll check
         </Button>
       )}
       {app.aiProgress && (

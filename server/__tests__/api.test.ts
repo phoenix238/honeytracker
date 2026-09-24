@@ -461,16 +461,74 @@ describe('export', () => {
   });
 });
 
+describe('AI and imported streams', () => {
+  it('picks a stream for imported records, and can re-stream an import filed under one stream', async () => {
+    await signIn();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const cranio = (await call('POST', '/api/streams', { name: 'Cranio' })).data;
+    const media = (await call('POST', '/api/streams', { name: 'Media' })).data;
+    const items = [
+      { sourceId: 'honeypot:entry:1', kind: 'income', date: '2026-05-01', amountPence: 6000, label: 'Sam — session', category: null, imageDataUrl: null },
+      { sourceId: 'honeypot:entry:2', kind: 'income', date: '2026-05-02', amountPence: 25000, label: 'Studio Ltd — shoot', category: null, imageDataUrl: null },
+    ];
+    // "Sort streams later": no stream on import.
+    await call('POST', '/api/import', { items, streamId: null });
+    let rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
+    expect(rows.every((t) => t.streamId === null && t.bucket === 'business_income')).toBe(true);
+
+    const byLabel = (list: Transaction[], l: string) => list.find((t) => t.counterparty.startsWith(l))!;
+    aiReply = (prompt) => {
+      expect(prompt).toContain('needs a stream');
+      return {
+        results: [
+          { id: byLabel(rows, 'Sam').id, bucket: 'business_income', streamId: cranio.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Session' },
+          { id: byLabel(rows, 'Studio').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Shoot' },
+        ],
+      };
+    };
+    const r = await call('POST', '/api/ai/sort', {});
+    expect(r.data.sorted).toBe(2);
+    rows = (await call('GET', '/api/state')).data.transactions;
+    expect(byLabel(rows, 'Sam').streamId).toBe(cranio.id);
+    expect(byLabel(rows, 'Studio').streamId).toBe(media.id);
+
+    // An earlier import filed everything under one stream: queue it for re-streaming.
+    const items2 = [{ sourceId: 'honeypot:entry:3', kind: 'income', date: '2026-05-03', amountPence: 1500, label: 'Café — shift', category: null, imageDataUrl: null }];
+    await call('POST', '/api/import', { items: items2, streamId: cranio.id });
+    const marked = await call('POST', '/api/ai/restream-imports', {});
+    expect(marked.data.marked).toBe(1); // only the one still marked as imported
+    rows = (await call('GET', '/api/state')).data.transactions;
+    aiReply = () => ({ results: [{ id: byLabel(rows, 'Café').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'medium', reason: 'x' }] });
+    expect((await call('POST', '/api/ai/sort', {})).data.sorted).toBe(1);
+    rows = (await call('GET', '/api/state')).data.transactions;
+    expect(byLabel(rows, 'Café')).toMatchObject({ streamId: media.id, classifiedBy: 'ai' });
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+});
+
 describe('AI examples', () => {
   it('learns from your own sorting first, then what the old app carried over', async () => {
     const { pickExamples } = await import('../aiSort');
     const { txn } = await import('../../src/core/__tests__/fixtures');
     const rows = [
-      txn({ counterparty: 'RYMAN', bucket: 'business_expense', classifiedBy: 'import' }),
+      txn({ counterparty: 'RYMAN', bucket: 'business_expense', classifiedBy: 'import', streamId: 's1' }),
       txn({ counterparty: 'ZOOM', bucket: 'business_expense', classifiedBy: 'user' }),
       txn({ counterparty: 'TESCO', bucket: 'personal', classifiedBy: 'ai' }),
       txn({ counterparty: 'ADOBE', bucket: 'unreviewed', classifiedBy: null }),
     ];
     expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['ZOOM', 'RYMAN']);
+  });
+});
+
+describe('AI examples skip imports whose stream is unknown', () => {
+  it('does not learn a stream from an import that has none or is being re-chosen', async () => {
+    const { pickExamples } = await import('../aiSort');
+    const { txn } = await import('../../src/core/__tests__/fixtures');
+    const rows = [
+      txn({ counterparty: 'A', bucket: 'business_income', classifiedBy: 'import', streamId: null }),
+      txn({ counterparty: 'B', bucket: 'business_income', classifiedBy: 'import', streamId: 's1', meta: { aiRestream: '1' } }),
+      txn({ counterparty: 'C', bucket: 'business_income', classifiedBy: 'import', streamId: 's1' }),
+    ];
+    expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['C']);
   });
 });

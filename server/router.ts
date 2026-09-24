@@ -135,6 +135,14 @@ function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessP
   };
 }
 
+/** Rows the AI may decide: unsorted, business with no stream yet, or flagged to re-stream. Never yours. */
+function needsAi(t: Transaction): boolean {
+  if (t.classifiedBy === 'user') return false;
+  if (t.bucket === 'unreviewed') return true;
+  const business = t.bucket === 'business_income' || t.bucket === 'business_expense';
+  return business && (!t.streamId || t.meta.aiRestream === '1');
+}
+
 function config() {
   return {
     starling: starlingTokens().length > 0,
@@ -518,30 +526,43 @@ const routes: [string, RegExp, Handler][] = [
   }],
 
   // ── AI sorting ────────────────────────────────────────────────────────────────────
-  // Sorts the next batch of unreviewed rows. The app calls this repeatedly, one batch per
-  // request, so no single request runs long; each sorted row waits for your check.
+  // Sorts the next batch of rows that need a decision: unreviewed rows, business rows with no
+  // stream yet (e.g. imported from the old app, which had no streams), and imported rows you've
+  // asked to have re-streamed. The app calls this repeatedly, one batch per request, so no
+  // single request runs long; each sorted row waits for your check.
   ['POST', /^\/api\/ai\/sort$/, async (_req, r) => {
     if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI sorting.');
     const all = await r.listTransactions();
     // A row the AI already looked at and skipped isn't offered again — it's yours to sort.
-    const waiting = all.filter((t) => t.bucket === 'unreviewed' && !t.meta.aiTried);
+    const waiting = all.filter((t) => needsAi(t) && !t.meta.aiTried);
     const batch = waiting.slice(0, AI_SORT_BATCH);
-    if (!batch.length) return json({ sorted: 0, remaining: 0 });
+    if (!batch.length) return json({ sorted: 0, skipped: 0, remaining: 0 });
     const [streams, rules] = await Promise.all([r.listStreams(), r.listRules()]);
     const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all));
     let sorted = 0;
     for (const d of decisions) {
       const current = all.find((t) => t.id === d.id);
-      if (!current || current.bucket !== 'unreviewed') continue; // you sorted it meanwhile
+      if (!current || !needsAi(current)) continue; // you sorted it meanwhile
       await r.updateTransaction(d.id, {
         bucket: d.bucket, streamId: d.streamId, category: d.category, businessPercent: d.businessPercent,
-        classifiedBy: 'ai', meta: { aiReason: d.reason, aiConfidence: d.confidence },
+        classifiedBy: 'ai', meta: { aiReason: d.reason, aiConfidence: d.confidence, aiRestream: '' },
       });
       sorted++;
     }
     const decided = new Set(decisions.map((d) => d.id));
-    for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1' } });
+    for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1', aiRestream: '' } });
     return json({ sorted, skipped: batch.length - sorted, remaining: waiting.length - batch.length });
+  }],
+  // Put everything imported from the old app back through the AI to choose its stream — for
+  // when the import filed it all under one stream.
+  ['POST', /^\/api\/ai\/restream-imports$/, async (_req, r) => {
+    let marked = 0;
+    for (const t of await r.listTransactions()) {
+      if (t.classifiedBy !== 'import' || (t.bucket !== 'business_income' && t.bucket !== 'business_expense')) continue;
+      await r.updateTransaction(t.id, { meta: { aiRestream: '1', aiTried: '' } });
+      marked++;
+    }
+    return json({ marked });
   }],
 
   // ── Sync ──────────────────────────────────────────────────────────────────────────
