@@ -433,6 +433,13 @@ export async function handle(req: Request): Promise<Response> {
   const rewritten = url.searchParams.get('__path');
   const path = rewritten ? `/api/${rewritten.replace(/^\/+/, '')}` : url.pathname.replace(/\/+$/, '') || '/';
   const secure = url.protocol === 'https:';
+  const res = await route(req, url, path, secure);
+  // Which path the server actually saw — so a routing problem on the host is visible.
+  res.headers.set('X-Honey-Path', path);
+  return res;
+}
+
+async function route(req: Request, url: URL, path: string, secure: boolean): Promise<Response> {
   try {
     if (path === '/api/health') return json({ ok: true });
 
