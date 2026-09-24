@@ -24,7 +24,7 @@ export type Bucket = 'unreviewed' | 'business_income' | 'business_expense' | 'pe
 export type Source = 'starling' | 'cash' | 'manual' | 'cstl' | 'import';
 
 /** Who set the classification — so auto-classified rows can be spot-checked. */
-export type ClassifiedBy = 'user' | 'rule' | 'cstl' | 'import' | 'invoice';
+export type ClassifiedBy = 'user' | 'rule' | 'cstl' | 'import' | 'invoice' | 'ai';
 
 export interface Transaction {
   id: string;

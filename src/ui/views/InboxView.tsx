@@ -12,7 +12,10 @@ import type { App } from '../useApp';
 // Every movement of money, and the review queue. The goal each week: this list's "To review"
 // filter empty. Then the year-end return is already done.
 
-type Filter = 'review' | 'receipts' | 'auto' | 'all';
+type Filter = 'review' | 'ai' | 'receipts' | 'auto' | 'all';
+
+// Least certain first, so the ones worth a real look come to the top.
+const CONF: Record<string, number> = { low: 0, medium: 1, high: 2 };
 
 export function InboxView({ app }: { app: App }) {
   const data = app.data!;
@@ -31,11 +34,13 @@ export function InboxView({ app }: { app: App }) {
       if (bounds && !withinBounds(t.date, bounds)) return false;
       if (filter === 'review' && t.bucket !== 'unreviewed') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
-      if (filter === 'auto' && t.classifiedBy !== 'rule' && t.classifiedBy !== 'cstl' && t.classifiedBy !== 'import') return false;
+      if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
+      if (filter === 'auto' && t.classifiedBy !== 'rule' && t.classifiedBy !== 'cstl' && t.classifiedBy !== 'import' && t.classifiedBy !== 'invoice') return false;
       if (needle && !`${t.counterparty} ${t.reference} ${t.note}`.toLowerCase().includes(needle) && !(t.amountPence / 100).toFixed(2).includes(needle)) return false;
       return true;
-    });
+    }).sort((a, b) => (filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']! : 0));
   }, [data, filter, year, q]);
+  const aiRows = data.transactions.filter((t) => t.classifiedBy === 'ai');
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
   const unreviewed = data.transactions.filter((t) => t.bucket === 'unreviewed');
@@ -68,6 +73,38 @@ export function InboxView({ app }: { app: App }) {
         >
           Review {unreviewed.length} waiting
         </Button>
+      )}
+
+      {data.config.aiSort && unreviewed.length > 0 && !app.aiProgress && (
+        <Button onClick={app.aiSortAll} disabled={app.busy}>
+          🤖 Sort {unreviewed.length} with AI, then I’ll check
+        </Button>
+      )}
+      {app.aiProgress && (
+        <Card style={{ borderColor: T.accent + '66' }}>
+          <Label color={T.accent}>AI sorting…</Label>
+          <div style={{ fontSize: 13, marginTop: 6 }}>
+            {app.aiProgress.sorted} sorted · about {app.aiProgress.remaining} to go. Keep this open; it works in batches of 40.
+          </div>
+        </Card>
+      )}
+      {filter === 'ai' && aiRows.length > 0 && (
+        <Card style={{ borderColor: T.green + '66' }}>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            {aiRows.length} line{aiRows.length === 1 ? '' : 's'} sorted by AI, least certain first. Open any that look wrong and fix them; then confirm the rest.
+          </div>
+          <Button
+            tone="green"
+            style={{ marginTop: 10, width: '100%' }}
+            disabled={app.busy}
+            onClick={async () => {
+              if (!window.confirm(`Confirm all ${aiRows.length} AI-sorted lines as they are?`)) return;
+              await app.classifyMany(aiRows.map((t) => t.id), {});
+            }}
+          >
+            Looks right — confirm all {aiRows.length}
+          </Button>
+        </Card>
       )}
 
       {data.cstlOther.length > 0 && (
@@ -111,6 +148,7 @@ export function InboxView({ app }: { app: App }) {
 
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
         <Chip active={filter === 'review'} onClick={() => setFilter('review')}>To review</Chip>
+        {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
         <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
         <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Auto-sorted</Chip>
         <Chip active={filter === 'all'} onClick={() => setFilter('all')}>All</Chip>
@@ -176,7 +214,7 @@ function Row({ t, streamName, onOpen }: { t: Transaction; streamName?: string; o
           {t.counterparty || t.reference || '—'}
         </span>
         <span style={{ display: 'block', fontSize: 11, color: T.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {[fmtDate(t.date), detail, streamName, t.receiptIds.length ? '🧾' : '', t.source === 'cash' ? 'cash' : ''].filter(Boolean).join(' · ')}
+          {[t.classifiedBy === 'ai' ? `🤖 ${t.meta.aiConfidence ?? ''}` : '', fmtDate(t.date), detail, streamName, t.receiptIds.length ? '🧾' : '', t.source === 'cash' ? 'cash' : ''].filter(Boolean).join(' · ')}
         </span>
       </span>
       <Money pence={t.amountPence} signed={t.direction} color={t.direction === 'in' ? T.green : T.text} size={14} />

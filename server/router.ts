@@ -10,6 +10,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
+import { AI_SORT_BATCH, aiSortBatch, pickExamples } from './aiSort.js';
 import { linkInvoicePayment } from './sync.js';
 import { isCategory } from '../src/core/hmrc.js';
 import { taxYearBounds, taxYearOf, today, withinBounds } from '../src/core/dates.js';
@@ -139,6 +140,7 @@ function config() {
     starling: starlingTokens().length > 0,
     cstl: cstlConfigured(),
     receiptsAi: receiptsAiConfigured(),
+    aiSort: receiptsAiConfigured(),
     cron: Boolean(process.env.CRON_SECRET?.trim()),
   };
 }
@@ -513,6 +515,33 @@ const routes: [string, RegExp, Handler][] = [
         'Cache-Control': 'no-store',
       },
     });
+  }],
+
+  // ── AI sorting ────────────────────────────────────────────────────────────────────
+  // Sorts the next batch of unreviewed rows. The app calls this repeatedly, one batch per
+  // request, so no single request runs long; each sorted row waits for your check.
+  ['POST', /^\/api\/ai\/sort$/, async (_req, r) => {
+    if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI sorting.');
+    const all = await r.listTransactions();
+    // A row the AI already looked at and skipped isn't offered again — it's yours to sort.
+    const waiting = all.filter((t) => t.bucket === 'unreviewed' && !t.meta.aiTried);
+    const batch = waiting.slice(0, AI_SORT_BATCH);
+    if (!batch.length) return json({ sorted: 0, remaining: 0 });
+    const [streams, rules] = await Promise.all([r.listStreams(), r.listRules()]);
+    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all));
+    let sorted = 0;
+    for (const d of decisions) {
+      const current = all.find((t) => t.id === d.id);
+      if (!current || current.bucket !== 'unreviewed') continue; // you sorted it meanwhile
+      await r.updateTransaction(d.id, {
+        bucket: d.bucket, streamId: d.streamId, category: d.category, businessPercent: d.businessPercent,
+        classifiedBy: 'ai', meta: { aiReason: d.reason, aiConfidence: d.confidence },
+      });
+      sorted++;
+    }
+    const decided = new Set(decisions.map((d) => d.id));
+    for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1' } });
+    return json({ sorted, skipped: batch.length - sorted, remaining: waiting.length - batch.length });
   }],
 
   // ── Sync ──────────────────────────────────────────────────────────────────────────

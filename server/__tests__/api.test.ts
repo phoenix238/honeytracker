@@ -28,11 +28,14 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 }
 
 const feed: any[] = [];
+let aiReply: (prompt: string) => unknown = () => ({ results: [] });
+let aiCalls = 0;
 const cstlEvents: any[] = [];
 
 function fakeNetwork() {
-  vi.stubGlobal('fetch', async (input: string | URL) => {
-    const url = String(input);
+  vi.stubGlobal('fetch', async (input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (input instanceof Request && !init) init = { body: await input.clone().text() } as RequestInit;
     if (url.endsWith('/accounts')) {
       return Response.json({ accounts: [{ accountUid: 'acc1', defaultCategory: 'cat1', name: 'Business' }] });
     }
@@ -42,6 +45,16 @@ function fakeNetwork() {
       return Response.json({ feedItems: feed.filter((f) => f.transactionTime >= min && f.transactionTime < max) });
     }
     if (url.startsWith('https://cstl.test/api/finance/events')) return Response.json({ events: cstlEvents });
+    if (url.includes('api.anthropic.com/v1/messages')) {
+      aiCalls++;
+      const body = JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}'));
+      const prompt = body.messages?.[0]?.content ?? '';
+      return Response.json({
+        id: 'msg_test', type: 'message', role: 'assistant', model: body.model, stop_reason: 'end_turn', stop_sequence: null,
+        content: [{ type: 'text', text: JSON.stringify(aiReply(typeof prompt === 'string' ? prompt : JSON.stringify(prompt))) }],
+        usage: { input_tokens: 10, output_tokens: 10 },
+      });
+    }
     return new Response('not found', { status: 404 });
   });
 }
@@ -359,6 +372,62 @@ describe('invoices', () => {
     const { data } = await call('GET', '/api/state');
     expect(data.storage.usedBytes).toBeGreaterThan(0);
     expect(data.storage.limitBytes).toBe(512 * 1024 * 1024);
+  });
+});
+
+describe('AI sorting', () => {
+  it('sorts the backlog for checking, ignores nonsense, and never overrides you', async () => {
+    await signIn();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const stream = (await call('POST', '/api/streams', { name: 'Media' })).data;
+    feed.push(item('a1', 350, 'IN', daysAgo(4), { counterPartyName: 'STUDIO LTD', reference: 'INV-0017' }));
+    feed.push(item('a2', 12.99, 'OUT', daysAgo(3), { counterPartyName: 'ADOBE' }));
+    feed.push(item('a3', 42.5, 'OUT', daysAgo(2), { counterPartyName: 'TESCO' }));
+    feed.push(item('a4', 5, 'OUT', daysAgo(1), { counterPartyName: 'MYSTERY' }));
+    await call('POST', '/api/sync', {});
+    const rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
+    const id = (uid: string) => rows.find((t) => t.sourceId === uid)!.id;
+    // You sort one yourself while the AI works.
+    await call('PATCH', `/api/transactions/${id('a3')}`, { bucket: 'personal' });
+
+    aiReply = (prompt) => {
+      expect(prompt).toContain('Media'); // it's told your streams
+      return {
+        results: [
+          { id: id('a1'), bucket: 'business_income', streamId: stream.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Invoice payment' },
+          { id: id('a2'), bucket: 'business_expense', streamId: stream.id, category: 'adminCosts', businessPercent: 140, confidence: 'medium', reason: 'Software' },
+          { id: 'not-a-row', bucket: 'business_income', streamId: '', category: '', businessPercent: 100, confidence: 'high', reason: 'x' },
+          // a4 left out: the AI skipped it
+        ],
+      };
+    };
+    aiCalls = 0;
+    const r = await call('POST', '/api/ai/sort', {});
+    expect(r.data).toMatchObject({ sorted: 2, skipped: 1, remaining: 0 });
+    const after = (await call('GET', '/api/state')).data.transactions as Transaction[];
+    const get = (uid: string) => after.find((t) => t.sourceId === uid)!;
+    expect(get('a1')).toMatchObject({ bucket: 'business_income', streamId: stream.id, classifiedBy: 'ai' });
+    expect(get('a1').meta.aiConfidence).toBe('high');
+    expect(get('a2')).toMatchObject({ category: 'adminCosts', businessPercent: 100 }); // clamped
+    expect(get('a3')).toMatchObject({ bucket: 'personal', classifiedBy: 'user' });
+    expect(get('a4').bucket).toBe('unreviewed');
+
+    // The skipped row isn't offered again, so the loop ends.
+    const again = await call('POST', '/api/ai/sort', {});
+    expect(again.data).toMatchObject({ sorted: 0, remaining: 0 });
+    expect(aiCalls).toBe(1);
+
+    // Confirming turns the AI's choice into yours.
+    await call('POST', '/api/transactions/bulk', { ids: [get('a1').id, get('a2').id], patch: {} });
+    const confirmed = (await call('GET', '/api/state')).data.transactions as Transaction[];
+    expect(confirmed.filter((t) => t.classifiedBy === 'ai')).toHaveLength(0);
+    expect(confirmed.find((t) => t.sourceId === 'a2')).toMatchObject({ bucket: 'business_expense', category: 'adminCosts' });
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  it('says what to set up when there is no API key', async () => {
+    await signIn();
+    expect((await call('POST', '/api/ai/sort', {})).data.error).toContain('ANTHROPIC_API_KEY');
   });
 });
 

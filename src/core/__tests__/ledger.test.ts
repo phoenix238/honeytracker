@@ -45,7 +45,7 @@ describe('reviewState', () => {
       txn({ bucket: 'business_expense', streamId: 'cstl', direction: 'out', category: 'adminCosts' }), // no receipt
       txn({ bucket: 'business_expense', streamId: 'cstl', direction: 'out', category: 'adminCosts', receiptIds: ['r1'], classifiedBy: 'rule' }),
     ];
-    expect(reviewState(rows, DEFAULT_SETTINGS)).toEqual({ unreviewed: 1, noStream: 1, missingReceipts: 1, autoClassified: 1 });
+    expect(reviewState(rows, DEFAULT_SETTINGS)).toEqual({ unreviewed: 1, noStream: 1, missingReceipts: 1, autoClassified: 1, aiToCheck: 0 });
   });
   it('only asks for receipts above the threshold', () => {
     const small = txn({ bucket: 'business_expense', direction: 'out', amountPence: 300 });

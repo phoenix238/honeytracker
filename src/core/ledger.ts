@@ -120,6 +120,8 @@ export interface ReviewState {
   missingReceipts: number;
   /** Classified automatically (rule / CSTL) — worth a glance, not required. */
   autoClassified: number;
+  /** Sorted by the AI and not yet checked by you. */
+  aiToCheck: number;
 }
 
 export function needsReceipt(t: Transaction, settings: Settings): boolean {
@@ -132,13 +134,14 @@ export function needsReceipt(t: Transaction, settings: Settings): boolean {
 }
 
 export function reviewState(txns: readonly Transaction[], settings: Settings, bounds?: TaxYearBounds): ReviewState {
-  const out: ReviewState = { unreviewed: 0, noStream: 0, missingReceipts: 0, autoClassified: 0 };
+  const out: ReviewState = { unreviewed: 0, noStream: 0, missingReceipts: 0, autoClassified: 0, aiToCheck: 0 };
   for (const t of txns) {
     if (bounds && !withinBounds(t.date, bounds)) continue;
     if (t.bucket === 'unreviewed') out.unreviewed++;
     if ((t.bucket === 'business_income' || t.bucket === 'business_expense') && !t.streamId) out.noStream++;
     if (needsReceipt(t, settings)) out.missingReceipts++;
     if (t.classifiedBy === 'rule' || t.classifiedBy === 'cstl') out.autoClassified++;
+    if (t.classifiedBy === 'ai') out.aiToCheck++;
   }
   return out;
 }

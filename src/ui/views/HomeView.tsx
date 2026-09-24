@@ -19,7 +19,7 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
   const next = p.upcoming[0];
   const nextDateTotal = next ? p.upcoming.filter((x) => x.due === next.due).reduce((a, x) => a + x.amountPence, 0) : 0;
-  const todo = p.review.unreviewed + p.review.missingReceipts + p.review.noStream;
+  const todo = p.review.unreviewed + p.review.missingReceipts + p.review.noStream + p.review.aiToCheck;
   const owed = owedSummary(data.invoices, data.today);
   const storageUsed = data.storage.limitBytes ? data.storage.usedBytes / data.storage.limitBytes : 0;
 
@@ -101,6 +101,7 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
           <Label color={T.accentBright}>To tidy</Label>
           <div style={{ fontSize: 14, color: T.text, marginTop: 6, lineHeight: 1.7 }}>
             {p.review.unreviewed > 0 && <div>{p.review.unreviewed} bank line{p.review.unreviewed === 1 ? '' : 's'} to classify</div>}
+            {p.review.aiToCheck > 0 && <div>{p.review.aiToCheck} AI-sorted line{p.review.aiToCheck === 1 ? '' : 's'} to check</div>}
             {p.review.missingReceipts > 0 && <div>{p.review.missingReceipts} business cost{p.review.missingReceipts === 1 ? '' : 's'} without a receipt</div>}
             {p.review.noStream > 0 && <div>{p.review.noStream} business line{p.review.noStream === 1 ? '' : 's'} with no stream</div>}
           </div>

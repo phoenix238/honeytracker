@@ -54,7 +54,7 @@ export interface AppState {
   invoices: Invoice[];
   invoiceCounter: number;
   storage: { usedBytes: number; limitBytes: number };
-  config: { starling: boolean; cstl: boolean; receiptsAi: boolean; cron: boolean };
+  config: { starling: boolean; cstl: boolean; receiptsAi: boolean; aiSort: boolean; cron: boolean };
   today: string;
 }
 
@@ -95,6 +95,8 @@ export const api = {
   unpayInvoice: (id: string) => call<Invoice>('POST', `/api/invoices/${id}/unpay`, {}),
   invoiceCandidates: (id: string) => call<Transaction[]>('GET', `/api/invoices/${id}/candidates`),
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
+
+  aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 
   importItems: (items: ImportedItem[], streamId: string | null) =>
     call<{ linked: number; created: number; skipped: number; receipts: number }>('POST', '/api/import', { items, streamId }),

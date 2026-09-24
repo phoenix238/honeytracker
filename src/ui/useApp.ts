@@ -43,6 +43,13 @@ export interface App {
   deleteInvoice: (id: string) => Promise<boolean>;
   payInvoice: (id: string, body: Parameters<typeof api.payInvoice>[1]) => Promise<boolean>;
   unpayInvoice: (id: string) => Promise<boolean>;
+  /** Progress of an AI sort in flight: rows sorted so far, and roughly how many left. */
+  aiProgress: { sorted: number; remaining: number } | null;
+  aiSortAll: () => Promise<void>;
+}
+
+function app_unreviewed(d: AppState | null): number {
+  return d ? d.transactions.filter((t) => t.bucket === 'unreviewed').length : 0;
 }
 
 export function useApp(): App {
@@ -53,6 +60,7 @@ export function useApp(): App {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(0);
+  const [aiProgress, setAiProgress] = useState<{ sorted: number; remaining: number } | null>(null);
   const flushing = useRef(false);
 
   const fail = useCallback((e: unknown) => {
@@ -280,6 +288,28 @@ export function useApp(): App {
         await reload();
       }
       return Boolean(res);
+    },
+    aiProgress,
+    aiSortAll: async () => {
+      setError('');
+      let sorted = 0;
+      setAiProgress({ sorted: 0, remaining: app_unreviewed(data) });
+      try {
+        // One batch per request, until nothing's left — each request stays short.
+        for (;;) {
+          const r = await api.aiSort();
+          sorted += r.sorted;
+          setAiProgress({ sorted, remaining: r.remaining });
+          if (r.remaining === 0 || (r.sorted === 0 && r.skipped === 0)) break;
+        }
+        setNotice(`AI sorted ${sorted} line${sorted === 1 ? '' : 's'} — check them under “AI: check”.`);
+      } catch (e) {
+        fail(e);
+        if (sorted) setNotice(`AI sorted ${sorted} before stopping — you can run it again to carry on.`);
+      } finally {
+        setAiProgress(null);
+        await reload();
+      }
     },
     unpayInvoice: async (id) => {
       const res = await run(() => api.unpayInvoice(id));

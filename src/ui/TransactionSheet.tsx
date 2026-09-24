@@ -110,8 +110,13 @@ export function TransactionSheet({
         {txn.reference && <div>Reference: <strong style={{ color: T.text }}>{txn.reference}</strong></div>}
         <div>
           From {txn.source === 'starling' ? `Starling${txn.meta.account ? ` · ${txn.meta.account}` : ''}` : txn.source === 'cstl' ? 'CSTL' : txn.source === 'import' ? 'old Honey app' : 'you (cash / manual)'}
-          {txn.classifiedBy && txn.classifiedBy !== 'user' && ` · classified by ${txn.classifiedBy === 'rule' ? 'a rule' : txn.classifiedBy === 'cstl' ? 'CSTL' : 'the import'}`}
+          {txn.classifiedBy && txn.classifiedBy !== 'user' && ` · classified by ${txn.classifiedBy === 'rule' ? 'a rule' : txn.classifiedBy === 'cstl' ? 'CSTL' : txn.classifiedBy === 'ai' ? 'AI' : txn.classifiedBy === 'invoice' ? 'its invoice' : 'the import'}`}
         </div>
+        {txn.classifiedBy === 'ai' && (
+          <div style={{ color: T.accentBright }}>
+            🤖 AI sorted this ({txn.meta.aiConfidence ?? 'low'} confidence): {txn.meta.aiReason || 'no reason given'}. Save to confirm it, or change it first.
+          </div>
+        )}
         {txn.meta.cstlRef && <div>CSTL client ref {txn.meta.cstlRef}{txn.meta.cstlReceipt ? ` · receipt ${txn.meta.cstlReceipt}` : ''}</div>}
       </div>
 
