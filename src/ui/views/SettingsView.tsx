@@ -120,7 +120,7 @@ function ConnectionsSection({ app }: { app: App }) {
       <Card style={{ paddingTop: 8 }}>
         {row(config.starling, 'Starling bank feed', 'Set STARLING_TOKEN in Vercel (a read-only personal access token from the Starling developer portal). Several accounts: STARLING_TOKENS, comma-separated.')}
         {row(config.cstl, 'CSTL sessions', 'Set CSTL_URL and CSTL_FINANCE_TOKEN here, and the same token as FINANCE_API_TOKEN in the CSTL app.')}
-        {row(config.receiptsAi, 'Receipt reading', 'Set ANTHROPIC_API_KEY to read receipts automatically.')}
+        {row(config.receiptsAi, 'Receipt reading', 'Set ANTHROPIC_API_KEY to read receipts and sort with AI. Use a key made inside a workspace — or add ANTHROPIC_WORKSPACE_ID too.')}
         {row(config.cron, 'Daily automatic sync', 'Set CRON_SECRET so the daily sync can run by itself.')}
         {lastSync?.errors.length ? <div style={{ fontSize: 12, color: T.danger, marginTop: 8 }}>Last sync: {lastSync.errors.join(' — ')}</div> : null}
       </Card>

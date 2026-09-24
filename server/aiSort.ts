@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { anthropicClient } from './anthropic.js';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema.mjs';
 import { CATEGORIES, isCategory } from '../src/core/hmrc.js';
 import type { Bucket, ExpenseCategory, Rule, Stream, Transaction } from '../src/core/types.js';
@@ -102,7 +102,7 @@ export async function aiSortBatch(
   streams: Stream[],
   rules: Rule[],
   examples: Transaction[],
-  client = new Anthropic(),
+  client = anthropicClient(),
 ): Promise<AiDecision[]> {
   if (!batch.length) return [];
   const streamIds = streams.filter((s) => !s.archived).map((s) => s.id);

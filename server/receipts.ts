@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { anthropicClient } from './anthropic.js';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema.mjs';
 import { CATEGORIES, isCategory } from '../src/core/hmrc.js';
 import { parsePence } from '../src/core/money.js';
@@ -48,7 +49,7 @@ ${CATEGORY_GUIDE}
 
 Rules: copy numbers exactly as printed; never guess a total you can't read — leave it empty instead. If the total is not in GBP, still give the printed number and its currency.`;
 
-export async function extractReceipt(mime: string, dataBase64: string, client = new Anthropic()): Promise<ExtractedReceipt | null> {
+export async function extractReceipt(mime: string, dataBase64: string, client = anthropicClient()): Promise<ExtractedReceipt | null> {
   const isPdf = mime === 'application/pdf';
   const isImage = (IMAGE_TYPES as readonly string[]).includes(mime);
   if (!isPdf && !isImage) return null;

@@ -30,6 +30,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 const feed: any[] = [];
 let aiReply: (prompt: string) => unknown = () => ({ results: [] });
 let aiCalls = 0;
+let lastAiHeaders: Record<string, string> = {};
 const cstlEvents: any[] = [];
 
 function fakeNetwork() {
@@ -47,6 +48,7 @@ function fakeNetwork() {
     if (url.startsWith('https://cstl.test/api/finance/events')) return Response.json({ events: cstlEvents });
     if (url.includes('api.anthropic.com/v1/messages')) {
       aiCalls++;
+      lastAiHeaders = Object.fromEntries(new Headers((init as RequestInit | undefined)?.headers ?? (input instanceof Request ? input.headers : undefined)).entries());
       const body = JSON.parse(String((init as RequestInit | undefined)?.body ?? '{}'));
       const prompt = body.messages?.[0]?.content ?? '';
       return Response.json({
@@ -402,8 +404,11 @@ describe('AI sorting', () => {
       };
     };
     aiCalls = 0;
+    process.env.ANTHROPIC_WORKSPACE_ID = 'wrkspc_test';
     const r = await call('POST', '/api/ai/sort', {});
     expect(r.data).toMatchObject({ sorted: 2, skipped: 1, remaining: 0 });
+    expect(lastAiHeaders['anthropic-workspace-id']).toBe('wrkspc_test');
+    delete process.env.ANTHROPIC_WORKSPACE_ID;
     const after = (await call('GET', '/api/state')).data.transactions as Transaction[];
     const get = (uid: string) => after.find((t) => t.sourceId === uid)!;
     expect(get('a1')).toMatchObject({ bucket: 'business_income', streamId: stream.id, classifiedBy: 'ai' });

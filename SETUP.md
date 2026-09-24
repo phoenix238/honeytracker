@@ -45,7 +45,12 @@ UTC (`vercel.json`). You can always press **Sync now** on Home too.
 
 `ANTHROPIC_API_KEY` = a key from https://console.anthropic.com (the CSTL one works).
 Without it, receipts are still stored; you just type the total and date yourself.
-Optional: `RECEIPT_MODEL` to choose a different Claude model.
+Optional: `RECEIPT_MODEL` / `AI_SORT_MODEL` to choose different Claude models.
+
+If Claude calls fail with *"This API key is not scoped to a workspace"*, the key was made at
+organisation level. Either create a new key inside a workspace (console → Settings → API
+keys → pick a workspace), or keep the key and add `ANTHROPIC_WORKSPACE_ID` = the workspace's
+ID (console → Settings → Workspaces).
 
 ## 6. Link CSTL (3 min)
 
