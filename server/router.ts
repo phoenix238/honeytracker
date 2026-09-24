@@ -1,4 +1,4 @@
-import { getDb } from './db.js';
+import { getDb, ConfigError } from './db.js';
 import { repo as makeRepo, type Repo, type NewTransaction } from './repo.js';
 import { AuthConfigError, checkPassword, clearCookie, isCron, isSignedIn, sessionCookie } from './auth.js';
 import { runSync, cstlConfigured, type SyncResult } from './sync.js';
@@ -468,8 +468,9 @@ async function route(req: Request, url: URL, path: string, secure: boolean): Pro
     throw new HttpError(404, 'No such endpoint');
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
-    if (e instanceof AuthConfigError) return json({ error: e.message, setup: true }, 503);
+    if (e instanceof AuthConfigError || e instanceof ConfigError) return json({ error: e.message, setup: true }, 503);
     console.error(e);
-    return json({ error: 'Something went wrong on the server.' }, 500);
+    // Single-user app: showing the real cause beats a mystery.
+    return json({ error: `Server error: ${(e as Error)?.message ?? String(e)}`.slice(0, 400) }, 500);
   }
 }
