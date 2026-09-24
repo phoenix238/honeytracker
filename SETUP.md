@@ -2,14 +2,13 @@
 
 About 30 minutes, once.
 
-## 0. The Vercel project (3 min)
+## 0. The Vercel project (2 min)
 
-vercel.com → **Add New… → Project** → import `phoenix238/honeytracker` → Framework
-preset **Vite** (detected) → **Deploy**. It will show a setup screen until steps 1–2 are
-done. Every push to `main` redeploys; every branch gets a preview URL.
-
-Everything below is an **environment variable** in Vercel → the project → Settings →
-Environment Variables. After adding any, redeploy (Deployments → ⋯ → Redeploy).
+The repo is already connected to Vercel — twice: projects `honeytracker` and
+`honey-tracker-app` in the phoenix team both deploy it. Pick one (say `honeytracker`),
+do every step below in that one, and delete the other (Settings → Advanced → Delete) so
+there's a single live copy and a single database. Every push to `main` redeploys; every
+branch gets a preview URL.
 
 ## 1. Database (5 min) — required
 
