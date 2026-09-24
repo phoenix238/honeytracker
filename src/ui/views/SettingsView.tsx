@@ -8,6 +8,7 @@ import { STORES, getAll } from '../../storage/db';
 import { api } from '../api';
 import type { BusinessProfile, Stream } from '../../core/types';
 import type { App } from '../useApp';
+import { GoogleSection } from './GoogleSection';
 
 const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'];
 
@@ -19,6 +20,7 @@ export function SettingsView({ app }: { app: App }) {
       <ProfileSection app={app} />
       <StreamsSection app={app} />
       <ConnectionsSection app={app} />
+      <GoogleSection app={app} />
       <RulesSection app={app} />
       <Section title="Receipts">
         <Card>

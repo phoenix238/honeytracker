@@ -4,6 +4,7 @@ import { AuthConfigError, checkPassword, clearCookie, isCron, isSignedIn, sessio
 import { runSync, cstlConfigured, type SyncResult } from './sync.js';
 import { starlingTokens } from './starling.js';
 import { extractReceipt, receiptsAiConfigured } from './receipts.js';
+import { FILE_TYPES, dropGoogleToken, googleConnected, isGoogleScript, newGoogleToken, takeFoundItem, type FoundItem } from './google.js';
 import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
@@ -170,9 +171,11 @@ async function state(r: Repo) {
     r.peekInvoiceCounter(),
     r.databaseBytes().catch(() => 0),
   ]);
+  const [googleOn, google] = await Promise.all([googleConnected(r), r.googleSummary()]);
   return {
     transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], invoices, invoiceCounter,
     storage: { usedBytes: dbBytes, limitBytes: storageLimitBytes() },
+    google: { connected: googleOn, ...google },
     config: config(), today: today(),
   };
 }
@@ -609,6 +612,17 @@ const routes: [string, RegExp, Handler][] = [
     return json({ marked });
   }],
 
+  // ── Google receipt finder ─────────────────────────────────────────────────────────
+  // A new key for the script (the old one stops working), plus the date to search back to:
+  // the start of last tax year, so anything still to go on a return is found.
+  ['POST', /^\/api\/google\/connect$/, async (_req, r) => {
+    return json({ token: await newGoogleToken(r), since: taxYearBounds(taxYearOf(today()) - 1).from });
+  }],
+  ['POST', /^\/api\/google\/disconnect$/, async (_req, r) => {
+    await dropGoogleToken(r);
+    return json({ ok: true });
+  }],
+
   // ── Sync ──────────────────────────────────────────────────────────────────────────
   ['POST', /^\/api\/sync$/, async (_req, r) => json(await runSync(r))],
 
@@ -682,6 +696,37 @@ const routes: [string, RegExp, Handler][] = [
   }],
 ];
 
+async function googleScript(req: Request, r: Repo, path: string): Promise<Response> {
+  if (path === '/api/google/script/unseen') {
+    const b = await body<{ ids?: unknown }>(req);
+    const ids = (Array.isArray(b.ids) ? b.ids : []).slice(0, 3000).map((x) => str(x, 200)).filter(Boolean);
+    return json({ unseen: (await r.googleUnseen(ids.map((id) => `google:${id}`))).map((id) => id.slice('google:'.length)) });
+  }
+  if (path === '/api/google/script/item') {
+    if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel so Honey can read what it finds.');
+    const b = await body(req);
+    const f = b.file as Record<string, unknown> | null | undefined;
+    const fileData = f ? str(f.dataBase64, 6_000_000) : '';
+    const fileOk = Boolean(f && FILE_TYPES.test(str(f.mime, 100)) && fileData && Buffer.byteLength(fileData, 'base64') <= MAX_UPLOAD_BYTES);
+    const item: FoundItem = {
+      id: str(b.id, 150),
+      source: b.source === 'drive' ? 'drive' : 'gmail',
+      from: str(b.from, 300),
+      subject: str(b.subject, 300),
+      date: str(b.date, 40),
+      text: str(b.text, 12_000),
+      file: fileOk ? { name: str(f!.name, 200) || 'receipt', mime: str(f!.mime, 100), dataBase64: fileData } : null,
+    };
+    if (!item.id) throw new HttpError(400, 'Missing id');
+    if (!item.file && !item.text.trim()) {
+      await r.googleMarkSeen(`google:${item.source}:${item.id}`, 'unreadable');
+      return json({ outcome: 'unreadable', matched: false });
+    }
+    return json(await takeFoundItem(r, item));
+  }
+  throw new HttpError(404, 'No such endpoint');
+}
+
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
   // Behind the vercel.json rewrite the original path arrives as ?__path=…
@@ -711,6 +756,13 @@ async function route(req: Request, url: URL, path: string, secure: boolean): Pro
     if (path === '/api/cron' && req.method === 'GET') {
       if (!isCron(req.headers.get('authorization'))) throw new HttpError(401, 'Not authorised');
       return json(await runSync(makeRepo(await getDb())));
+    }
+
+    // The Google receipt finder script signs in with its own key, not your password.
+    if (path.startsWith('/api/google/script/') && req.method === 'POST') {
+      const r = makeRepo(await getDb());
+      if (!(await isGoogleScript(r, req.headers.get('authorization')))) throw new HttpError(401, 'This script has been disconnected — copy it again from Honey → Settings.');
+      return await googleScript(req, r, path);
     }
 
     if (!isSignedIn(req.headers.get('cookie'))) throw new HttpError(401, 'Not signed in');

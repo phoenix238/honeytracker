@@ -51,6 +51,14 @@ export const SCHEMA: string[] = [
     source_id text UNIQUE
   )`,
   `CREATE INDEX IF NOT EXISTS receipts_transaction ON receipts (transaction_id)`,
+  // Every email or Drive file the Google receipt finder has sent, and what became of it, so
+  // nothing is read (or paid for) twice.
+  `CREATE TABLE IF NOT EXISTS google_seen (
+    source_id text PRIMARY KEY,
+    at text NOT NULL,
+    outcome text NOT NULL,
+    receipt_id text
+  )`,
   `CREATE TABLE IF NOT EXISTS rules (
     id text PRIMARY KEY,
     field text NOT NULL,

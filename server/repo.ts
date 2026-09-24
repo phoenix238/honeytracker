@@ -251,6 +251,30 @@ export function repo(db: Db) {
       const [row] = await db.query<Row>('SELECT mime, filename, data_base64 FROM receipts WHERE id = $1', [id]);
       return row ? { mime: s(row.mime), filename: s(row.filename), data: Buffer.from(s(row.data_base64), 'base64') } : null;
     },
+    /** Of these Gmail/Drive ids, the ones the receipt finder hasn't sent before. */
+    async googleUnseen(ids: string[]): Promise<string[]> {
+      if (!ids.length) return [];
+      const rows = await db.query<Row>('SELECT source_id FROM google_seen WHERE source_id = ANY($1::text[])', [ids]);
+      const seen = new Set(rows.map((r) => s(r.source_id)));
+      return ids.filter((id) => !seen.has(id));
+    },
+    async googleMarkSeen(sourceId: string, outcome: string, receiptId: string | null = null): Promise<void> {
+      await db.query(
+        `INSERT INTO google_seen (source_id, at, outcome, receipt_id) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (source_id) DO UPDATE SET at=$2, outcome=$3, receipt_id=$4`,
+        [sourceId, now(), outcome, receiptId],
+      );
+    },
+    async googleSummary(): Promise<{ checked: number; found: number; matched: number; lastAt: string | null }> {
+      const [row] = await db.query<Row>(
+        `SELECT count(*)::int AS checked,
+                count(*) FILTER (WHERE g.outcome = 'receipt')::int AS found,
+                count(*) FILTER (WHERE g.outcome = 'receipt' AND r.transaction_id IS NOT NULL)::int AS matched,
+                max(g.at) AS last_at
+         FROM google_seen g LEFT JOIN receipts r ON r.id = g.receipt_id`,
+      );
+      return { checked: Number(row?.checked ?? 0), found: Number(row?.found ?? 0), matched: Number(row?.matched ?? 0), lastAt: row?.last_at ? s(row.last_at) : null };
+    },
     /** Returns null when a receipt with this sourceId was already imported. */
     async insertReceipt(r: Omit<Receipt, 'id' | 'uploadedAt'>, dataBase64: string, sourceId: string | null = null): Promise<Receipt | null> {
       const id = mkId();

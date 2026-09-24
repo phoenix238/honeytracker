@@ -623,3 +623,72 @@ describe('what the AI gets to read', () => {
     delete process.env.ANTHROPIC_API_KEY;
   });
 });
+
+describe('Google receipt finder', () => {
+  it('takes receipts from the script with its own key, keeps only purchases, skips repeats, and attaches to the bank line', async () => {
+    await signIn();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    feed.push(item('g1', 23.99, 'OUT', daysAgo(5), { counterPartyName: 'ADOBE' }));
+    await call('POST', '/api/sync', {});
+    const day = daysAgo(5).slice(0, 10);
+
+    const { token, since } = (await call('POST', '/api/google/connect', {})).data;
+    expect(token).toMatch(/^hny_/);
+    expect(since).toMatch(/^\d{4}-04-06$/);
+    const script = (path: string, body: unknown, key = token) => {
+      const saved = cookie;
+      cookie = ''; // the script has no session — only its key
+      return call('POST', `/api/google/script/${path}`, body, { Authorization: `Bearer ${key}` }).finally(() => { cookie = saved; });
+    };
+    expect((await script('unseen', { ids: ['gmail:a'] }, 'hny_wrong')).status).toBe(401);
+    expect((await script('unseen', { ids: ['gmail:a', 'gmail:b', 'drive:c'] })).data.unseen).toEqual(['gmail:a', 'gmail:b', 'drive:c']);
+
+    // An Adobe invoice email with a PDF: a purchase, attached to the bank line.
+    aiReply = (prompt) => {
+      expect(prompt).toContain('Subject: Your Adobe invoice');
+      return { kind: 'purchase', merchant: 'Adobe', date: day, total: '23.99', vat: '4.00', currency: 'GBP', category: 'adminCosts', description: 'Creative Cloud monthly' };
+    };
+    const pdf = { name: 'invoice.pdf', mime: 'application/pdf', dataBase64: Buffer.from('%PDF-1.4 fake').toString('base64') };
+    const a = await script('item', { id: 'a', source: 'gmail', from: 'Adobe <mail@adobe.com>', subject: 'Your Adobe invoice', date: day, text: 'Thanks for your payment', file: pdf });
+    expect(a.data).toMatchObject({ outcome: 'receipt', matched: true });
+
+    // A newsletter: read, not kept.
+    aiReply = () => ({ kind: 'other', merchant: '', date: '', total: '', vat: '', currency: '', category: 'otherExpenses', description: '' });
+    expect((await script('item', { id: 'b', source: 'gmail', from: 'x', subject: 'Big sale!', date: day, text: '50% off', file: null })).data.outcome).toBe('other');
+
+    // The same Adobe invoice saved in Drive: recognised as the same purchase.
+    aiReply = () => ({ kind: 'purchase', merchant: 'Adobe Systems', date: day, total: '23.99', vat: '', currency: 'GBP', category: 'adminCosts', description: '' });
+    expect((await script('item', { id: 'c', source: 'drive', from: '', subject: 'adobe.pdf', date: day, text: 'File', file: pdf })).data.outcome).toBe('duplicate');
+
+    // Nothing is sent twice.
+    expect((await script('unseen', { ids: ['gmail:a', 'gmail:b', 'drive:c', 'gmail:d'] })).data.unseen).toEqual(['gmail:d']);
+
+    const s = (await call('GET', '/api/state')).data;
+    expect(s.google).toMatchObject({ connected: true, checked: 3, found: 1, matched: 1 });
+    const bank = s.transactions.find((t: Transaction) => t.sourceId === 'g1');
+    expect(bank.receiptIds).toHaveLength(1);
+    expect(bank.bucket).toBe('unreviewed'); // attached, not decided — the AI sort and you do that
+    expect(s.receipts[0]).toMatchObject({ merchant: 'Adobe', totalPence: 2399, mime: 'application/pdf' });
+
+    // An email with no attachment is kept as the email itself, served as plain text.
+    aiReply = () => ({ kind: 'purchase', merchant: 'Trainline', date: day, total: '41.20', vat: '', currency: 'GBP', category: 'travelCosts', description: 'London return' });
+    const e = await script('item', { id: 'd', source: 'gmail', from: 'Trainline', subject: 'Your tickets', date: day, text: 'Total £41.20 <script>x</script>', file: null });
+    expect(e.data.outcome).toBe('receipt');
+    const file = await call('GET', `/api/receipts/${e.data.receiptId}/file`);
+    expect(file.res.headers.get('content-type')).toContain('text/plain');
+    expect(file.res.headers.get('x-content-type-options')).toBe('nosniff');
+
+    // Disconnecting locks the script out.
+    await call('POST', '/api/google/disconnect', {});
+    expect((await script('unseen', { ids: ['gmail:z'] })).status).toBe(401);
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+
+  it('a signed-in browser can’t pose as the script, and the script can’t reach anything else', async () => {
+    await signIn();
+    expect((await call('POST', '/api/google/script/unseen', { ids: [] })).status).toBe(401);
+    const { token } = (await call('POST', '/api/google/connect', {})).data;
+    cookie = '';
+    expect((await call('GET', '/api/state', undefined, { Authorization: `Bearer ${token}` })).status).toBe(401);
+  });
+});

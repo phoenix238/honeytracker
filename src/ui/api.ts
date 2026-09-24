@@ -54,6 +54,8 @@ export interface AppState {
   invoices: Invoice[];
   invoiceCounter: number;
   storage: { usedBytes: number; limitBytes: number };
+  /** The Google receipt finder: whether a script key exists, and what it has sent so far. */
+  google: { connected: boolean; checked: number; found: number; matched: number; lastAt: string | null };
   config: { starling: boolean; cstl: boolean; receiptsAi: boolean; aiSort: boolean; cron: boolean };
   today: string;
 }
@@ -98,6 +100,8 @@ export const api = {
 
   aiRestreamImports: () => call<{ marked: number }>('POST', '/api/ai/restream-imports', {}),
   aiReadReceipts: () => call<{ read: number; tried: number; remaining: number }>('POST', '/api/ai/read-receipts', {}),
+  googleConnect: () => call<{ token: string; since: string }>('POST', '/api/google/connect', {}),
+  googleDisconnect: () => call<{ ok: boolean }>('POST', '/api/google/disconnect', {}),
   aiUndo: () => call<{ undone: number; kept: number; cleared: number }>('POST', '/api/ai/undo', {}),
   aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 

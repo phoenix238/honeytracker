@@ -104,7 +104,7 @@ function ReceiptSheet({ app, receipt, onClose }: { app: App; receipt: Receipt; o
         {receipt.mime.startsWith('image/') ? (
           <img src={receiptFileUrl(receipt.id)} alt="Receipt" style={{ width: '100%', maxHeight: 280, objectFit: 'contain', borderRadius: 10, background: T.surface }} />
         ) : (
-          <span style={{ color: T.blue, fontSize: 14 }}>Open PDF</span>
+          <span style={{ color: T.blue, fontSize: 14 }}>{receipt.mime.startsWith('text/') ? 'Open the email' : 'Open PDF'}</span>
         )}
       </a>
       <Field label="Shop / supplier"><input style={inputStyle} value={merchant} onChange={(e) => setMerchant(e.target.value)} /></Field>
