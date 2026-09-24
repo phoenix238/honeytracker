@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .vite/
 *.tsbuildinfo
+.data/
+.env*.local
+.vercel
