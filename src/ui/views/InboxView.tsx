@@ -12,7 +12,10 @@ import type { App } from '../useApp';
 // Every movement of money, and the review queue. The goal each week: this list's "To review"
 // filter empty. Then the year-end return is already done.
 
-type Filter = 'review' | 'ai' | 'receipts' | 'auto' | 'all';
+type Filter = 'review' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
+
+const fromOldApp = (t: Transaction) => t.source === 'import' || Boolean(t.meta.importedFrom);
+const isBusiness = (t: Transaction) => t.bucket === 'business_income' || t.bucket === 'business_expense';
 
 // Least certain first, so the ones worth a real look come to the top.
 const CONF: Record<string, number> = { low: 0, medium: 1, high: 2 };
@@ -35,12 +38,23 @@ export function InboxView({ app }: { app: App }) {
       if (filter === 'review' && t.bucket !== 'unreviewed') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
       if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
+      if (filter === 'old' && !fromOldApp(t)) return false;
       if (filter === 'auto' && t.classifiedBy !== 'rule' && t.classifiedBy !== 'cstl' && t.classifiedBy !== 'import' && t.classifiedBy !== 'invoice') return false;
       if (needle && !`${t.counterparty} ${t.reference} ${t.note}`.toLowerCase().includes(needle) && !(t.amountPence / 100).toFixed(2).includes(needle)) return false;
       return true;
-    }).sort((a, b) => (filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']! : 0));
+    }).sort((a, b) =>
+      filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']!
+      // Old-app records the new app doesn't count as business come first: those are the gap.
+      : filter === 'old' ? Number(isBusiness(a)) - Number(isBusiness(b))
+      : 0);
   }, [data, filter, year, q]);
   const aiRows = data.transactions.filter((t) => t.classifiedBy === 'ai');
+  // Anything the AI has ever decided, confirmed or not — what "undo" can rewind.
+  const aiTouched = data.transactions.some((t) => t.meta.aiReason);
+  const oldRows = filter === 'old' ? rows : [];
+  const sumOf = (list: Transaction[]) => list.reduce((a, t) => a + t.amountPence, 0);
+  const oldCosts = oldRows.filter((t) => t.direction === 'out');
+  const oldIncome = oldRows.filter((t) => t.direction === 'in');
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
   const unreviewed = data.transactions.filter((t) => t.bucket === 'unreviewed');
@@ -48,6 +62,7 @@ export function InboxView({ app }: { app: App }) {
   const aiQueue = data.transactions.filter(
     (t) =>
       t.classifiedBy !== 'user' &&
+      t.classifiedBy !== 'ai' &&
       !t.meta.aiTried &&
       (t.bucket === 'unreviewed' || ((t.bucket === 'business_income' || t.bucket === 'business_expense') && (!t.streamId || t.meta.aiRestream === '1'))),
   ).length;
@@ -114,6 +129,33 @@ export function InboxView({ app }: { app: App }) {
         </Card>
       )}
 
+      {aiTouched && !app.aiProgress && (
+        <Button
+          tone="quiet"
+          disabled={app.busy}
+          onClick={async () => {
+            if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are. You can run the AI again afterwards.')) return;
+            await app.aiUndo();
+          }}
+        >
+          ↩︎ Undo AI sorting
+        </Button>
+      )}
+
+      {filter === 'old' && (
+        <Card>
+          <Label>From your old app{year === 'all' ? '' : ` · ${taxYearLabel(year)}`}</Label>
+          <div style={{ fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
+            Costs: {oldCosts.length} · <Money pence={sumOf(oldCosts)} size={13} /> — counted as business here: <Money pence={sumOf(oldCosts.filter(isBusiness))} size={13} />
+            <br />
+            Income: {oldIncome.length} · <Money pence={sumOf(oldIncome)} size={13} /> — counted as business here: <Money pence={sumOf(oldIncome.filter(isBusiness))} size={13} />
+          </div>
+          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 6, lineHeight: 1.5 }}>
+            Ones not counted as business are listed first — open one to put it right. Only records your old app marked as business costs or paid income come across; its Bank tab “Spending” (all card spending) doesn’t.
+          </div>
+        </Card>
+      )}
+
       {data.cstlOther.length > 0 && (
         <Card style={{ borderColor: T.blue + '66' }}>
           <Label color={T.blue}>CSTL sessions paid by card / other</Label>
@@ -156,6 +198,7 @@ export function InboxView({ app }: { app: App }) {
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
         <Chip active={filter === 'review'} onClick={() => setFilter('review')}>To review</Chip>
         {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
+        {data.transactions.some(fromOldApp) && <Chip active={filter === 'old'} onClick={() => setFilter('old')}>Old app</Chip>}
         <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
         <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Auto-sorted</Chip>
         <Chip active={filter === 'all'} onClick={() => setFilter('all')}>All</Chip>

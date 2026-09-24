@@ -198,6 +198,15 @@ export function repo(db: Db) {
       return rows.map((r) => ({ at: s(r.at), action: s(r.action), detail: r.detail }));
     },
 
+    /** Every recorded change to a transaction, oldest first — what "undo AI sorting" rewinds through. */
+    async transactionUpdates(): Promise<{ transactionId: string; detail: Record<string, { from?: unknown; to?: unknown }> }[]> {
+      const rows = await db.query<Row>("SELECT transaction_id, detail FROM audit_log WHERE action = 'update' AND transaction_id IS NOT NULL ORDER BY id");
+      return rows.map((r) => ({
+        transactionId: s(r.transaction_id),
+        detail: (typeof r.detail === 'string' ? JSON.parse(r.detail) : r.detail ?? {}) as Record<string, { from?: unknown; to?: unknown }>,
+      }));
+    },
+
     // ── Streams ───────────────────────────────────────────────────────────────────────
     async listStreams(): Promise<Stream[]> {
       return (await db.query<Row>('SELECT * FROM streams ORDER BY created_at')).map(toStream);

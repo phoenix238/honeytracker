@@ -537,3 +537,59 @@ describe('AI examples skip imports whose stream is unknown', () => {
     expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['C']);
   });
 });
+
+describe('undo AI sorting', () => {
+  it('puts every AI decision back as it was, keeps your hand edits, and never un-business an old-app record', async () => {
+    await signIn();
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    const cranio = (await call('POST', '/api/streams', { name: 'Cranio' })).data;
+    const media = (await call('POST', '/api/streams', { name: 'Media' })).data;
+    feed.push(item('u1', 80, 'IN', daysAgo(4), { counterPartyName: 'J SMITH' }));
+    feed.push(item('u2', 30, 'OUT', daysAgo(3), { counterPartyName: 'CAFE' }));
+    feed.push(item('u3', 9, 'OUT', daysAgo(2), { counterPartyName: 'SPOTIFY' }));
+    await call('POST', '/api/sync', {});
+    // An old-app business cost, filed under Cranio at import.
+    await call('POST', '/api/import', {
+      items: [{ sourceId: 'honeypot:receipt:r1', kind: 'expense', date: '2026-05-01', amountPence: 4500, label: 'Couch roll', category: 'costOfGoods', imageDataUrl: null }],
+      streamId: cranio.id,
+    });
+    await call('POST', '/api/ai/restream-imports', {});
+    let rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
+    const by = (list: Transaction[], name: string) => list.find((t) => t.counterparty === name)!;
+
+    aiReply = () => ({
+      results: [
+        { id: by(rows, 'J SMITH').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'low', reason: 'x' },
+        { id: by(rows, 'CAFE').id, bucket: 'business_expense', streamId: media.id, category: 'travelCosts', businessPercent: 100, confidence: 'low', reason: 'x' },
+        { id: by(rows, 'SPOTIFY').id, bucket: 'personal', streamId: '', category: '', businessPercent: 100, confidence: 'high', reason: 'x' },
+        // Wrong: tries to turn the old-app business cost personal.
+        { id: by(rows, 'Couch roll').id, bucket: 'personal', streamId: '', category: '', businessPercent: 100, confidence: 'low', reason: 'x' },
+      ],
+    });
+    expect((await call('POST', '/api/ai/sort', {})).data.sorted).toBe(4);
+    rows = (await call('GET', '/api/state')).data.transactions;
+    expect(by(rows, 'Couch roll')).toMatchObject({ bucket: 'business_expense', category: 'costOfGoods', classifiedBy: 'ai' });
+
+    // You confirm everything without looking, then fix one by hand.
+    await call('POST', '/api/transactions/bulk', { ids: rows.filter((t) => t.classifiedBy === 'ai').map((t) => t.id), patch: {} });
+    await call('PATCH', `/api/transactions/${by(rows, 'CAFE').id}`, { bucket: 'personal' });
+
+    const undo = await call('POST', '/api/ai/undo', {});
+    expect(undo.data).toMatchObject({ undone: 3, kept: 1 });
+    rows = (await call('GET', '/api/state')).data.transactions;
+    expect(by(rows, 'J SMITH')).toMatchObject({ bucket: 'unreviewed', streamId: null });
+    expect(by(rows, 'J SMITH').classifiedBy).not.toBe('ai');
+    expect(by(rows, 'SPOTIFY').bucket).toBe('unreviewed');
+    expect(by(rows, 'CAFE')).toMatchObject({ bucket: 'personal', classifiedBy: 'user' }); // your hand edit stays
+    const couch = by(rows, 'Couch roll');
+    expect(couch).toMatchObject({ bucket: 'business_expense', streamId: cranio.id, category: 'costOfGoods', classifiedBy: 'import' });
+    expect(couch.meta.aiRestream).toBe('1'); // back in the queue, as before the AI ran
+    expect(rows.some((t) => t.meta.aiReason)).toBe(false);
+
+    // And the AI can run again over the same lines.
+    aiReply = () => ({ results: [] });
+    const again = await call('POST', '/api/ai/sort', {});
+    expect(again.data.skipped).toBe(3);
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+});

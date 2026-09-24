@@ -166,3 +166,52 @@ export function pickExamples(txns: readonly Transaction[], max = 60): Transactio
   }
   return out;
 }
+
+type Change = Record<string, { from?: unknown; to?: unknown }>;
+const FIELDS = ['bucket', 'streamId', 'category', 'businessPercent'] as const;
+
+export interface AiUndo {
+  id: string;
+  patch: Partial<Pick<Transaction, 'bucket' | 'streamId' | 'category' | 'businessPercent' | 'classifiedBy'>> & { meta: Record<string, string> };
+}
+
+/**
+ * Rewind the AI's sorting using the change log: each row the AI decided goes back to exactly how
+ * it was before. A row you changed by hand after the AI (a different bucket, stream, category or
+ * %) is yours and stays; one you only confirmed as it was ("confirm all") is rewound.
+ */
+export function planAiUndo(
+  txns: readonly Transaction[],
+  updates: readonly { transactionId: string; detail: Change }[],
+): { undo: AiUndo[]; kept: number } {
+  const byTxn = new Map<string, Change[]>();
+  for (const u of updates) byTxn.set(u.transactionId, [...(byTxn.get(u.transactionId) ?? []), u.detail]);
+  const undo: AiUndo[] = [];
+  let kept = 0;
+  for (const t of txns) {
+    const log = byTxn.get(t.id) ?? [];
+    const first = log.findIndex((d) => d.classifiedBy?.to === 'ai');
+    if (first < 0) continue;
+    // Walk forward from the AI's first decision, tracking who owns the row at each step.
+    let owner: unknown = 'ai';
+    let byHand = false;
+    const before: Record<string, unknown> = {};
+    for (const d of log.slice(first)) {
+      if (d.classifiedBy) owner = d.classifiedBy.to;
+      const touches = FIELDS.some((f) => f in d);
+      if (touches && owner !== 'ai') { byHand = true; break; }
+      // The earliest "from" of each field is how it was before the AI.
+      for (const f of [...FIELDS, 'classifiedBy'] as const) if (d[f] && !(f in before)) before[f] = d[f]!.from;
+    }
+    if (byHand) { kept++; continue; }
+    const aiMeta = (log[first]!.meta?.from ?? {}) as Record<string, string>;
+    undo.push({
+      id: t.id,
+      patch: {
+        ...(before as AiUndo['patch']),
+        meta: { aiReason: '', aiConfidence: '', aiTried: '', aiRestream: aiMeta.aiRestream ?? '' },
+      },
+    });
+  }
+  return { undo, kept };
+}

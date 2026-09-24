@@ -10,7 +10,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
-import { AI_SORT_BATCH, aiSortBatch, pickExamples } from './aiSort.js';
+import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
 import { linkInvoicePayment } from './sync.js';
 import { isCategory } from '../src/core/hmrc.js';
 import { taxYearBounds, taxYearOf, today, withinBounds } from '../src/core/dates.js';
@@ -137,7 +137,8 @@ function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessP
 
 /** Rows the AI may decide: unsorted, business with no stream yet, or flagged to re-stream. Never yours. */
 function needsAi(t: Transaction): boolean {
-  if (t.classifiedBy === 'user') return false;
+  // Yours, or already decided by the AI and waiting for your check.
+  if (t.classifiedBy === 'user' || t.classifiedBy === 'ai') return false;
   if (t.bucket === 'unreviewed') return true;
   const business = t.bucket === 'business_income' || t.bucket === 'business_expense';
   return business && (!t.streamId || t.meta.aiRestream === '1');
@@ -543,8 +544,14 @@ const routes: [string, RegExp, Handler][] = [
     for (const d of decisions) {
       const current = all.find((t) => t.id === d.id);
       if (!current || !needsAi(current)) continue; // you sorted it meanwhile
+      // A row already known to be business (your old app said so) only gets a stream: the AI
+      // never turns it personal or changes its category.
+      const known = current.bucket === 'business_income' || current.bucket === 'business_expense';
+      const choice = known
+        ? { bucket: current.bucket, streamId: d.streamId, category: current.category, businessPercent: current.businessPercent }
+        : { bucket: d.bucket, streamId: d.streamId, category: d.category, businessPercent: d.businessPercent };
       await r.updateTransaction(d.id, {
-        bucket: d.bucket, streamId: d.streamId, category: d.category, businessPercent: d.businessPercent,
+        ...choice,
         classifiedBy: 'ai', meta: { aiReason: d.reason, aiConfidence: d.confidence, aiRestream: '' },
       });
       sorted++;
@@ -552,6 +559,22 @@ const routes: [string, RegExp, Handler][] = [
     const decided = new Set(decisions.map((d) => d.id));
     for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1', aiRestream: '' } });
     return json({ sorted, skipped: batch.length - sorted, remaining: waiting.length - batch.length });
+  }],
+  // Rewind the AI: every row it sorted goes back to how it was before, and the skipped ones
+  // are offered again. Rows you changed by hand after the AI stay as you left them.
+  ['POST', /^\/api\/ai\/undo$/, async (_req, r) => {
+    const all = await r.listTransactions();
+    const { undo, kept } = planAiUndo(all, await r.transactionUpdates());
+    for (const u of undo) await r.updateTransaction(u.id, u.patch);
+    const undone = new Set(undo.map((u) => u.id));
+    // Leftover AI marks — a skipped row, or one you've since made your own — are cleared too.
+    let cleared = 0;
+    for (const t of all) {
+      if (undone.has(t.id) || !(t.meta.aiTried || t.meta.aiReason)) continue;
+      await r.updateTransaction(t.id, { meta: { aiTried: '', aiReason: '', aiConfidence: '' } });
+      cleared++;
+    }
+    return json({ undone: undo.length, kept, cleared });
   }],
   // Put everything imported from the old app back through the AI to choose its stream — for
   // when the import filed it all under one stream.

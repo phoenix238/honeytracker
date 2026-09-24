@@ -46,6 +46,8 @@ export interface App {
   /** Progress of an AI sort in flight: rows sorted so far, and roughly how many left. */
   aiProgress: { sorted: number; remaining: number } | null;
   aiSortAll: () => Promise<void>;
+  /** Rewind everything the AI sorted that you haven't changed by hand. */
+  aiUndo: () => Promise<void>;
 }
 
 function app_unreviewed(d: AppState | null): number {
@@ -308,6 +310,16 @@ export function useApp(): App {
         if (sorted) setNotice(`AI sorted ${sorted} before stopping — you can run it again to carry on.`);
       } finally {
         setAiProgress(null);
+        await reload();
+      }
+    },
+    aiUndo: async () => {
+      const res = await run(() => api.aiUndo());
+      if (res) {
+        setNotice(
+          `Put back ${res.undone} line${res.undone === 1 ? '' : 's'} as they were before the AI` +
+            (res.kept ? ` — ${res.kept} you changed by hand stay as you left them.` : '.'),
+        );
         await reload();
       }
     },

@@ -282,6 +282,19 @@ function ImportSection({ app }: { app: App }) {
             🤖 Let AI re-sort the streams of imported records
           </Button>
         )}
+        {data.transactions.some((t) => t.meta.aiReason) && (
+          <Button
+            tone="quiet"
+            disabled={app.busy || Boolean(app.aiProgress)}
+            onClick={async () => {
+              if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are.')) return;
+              await app.aiUndo();
+              setStatus('AI sorting undone. Compare with your old app under Money → Old app (pick “All years”).');
+            }}
+          >
+            ↩︎ Undo AI sorting
+          </Button>
+        )}
         <Label>Export</Label>
         <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV from the Tax tab.</div>
       </Card>
