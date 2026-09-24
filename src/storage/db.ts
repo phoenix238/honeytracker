@@ -1,5 +1,7 @@
-// Thin promise wrapper over IndexedDB. The device is the authoritative copy for the current
-// session; this is where it lives. Two deliberate lessons from the old app are baked in:
+// Thin promise wrapper over IndexedDB. The server is now the book of record; the device keeps
+// only two things: the outbox of receipts snapped while offline, and (read-only) the records
+// the first version of this app stored here, until they're uploaded. Lessons kept from the
+// old app:
 //
 //   1. Receipt photos are stored as Blobs in their own object store — never base64 in
 //      localStorage, which capped out around 5MB and then failed silently. IndexedDB has no
@@ -8,13 +10,14 @@
 //      Nothing here swallows an error.
 
 const DB_NAME = 'honeytracker';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export const STORES = {
   income: 'income',
   expenses: 'expenses',
   meta: 'meta', // single-document store, e.g. settings under key "settings"
   images: 'images', // receipt photos as Blobs, keyed by image id
+  outbox: 'outbox', // receipts waiting to upload, keyed by id
 } as const;
 
 export type StoreName = (typeof STORES)[keyof typeof STORES];
@@ -38,6 +41,7 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORES.expenses)) db.createObjectStore(STORES.expenses, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(STORES.meta)) db.createObjectStore(STORES.meta);
       if (!db.objectStoreNames.contains(STORES.images)) db.createObjectStore(STORES.images);
+      if (!db.objectStoreNames.contains(STORES.outbox)) db.createObjectStore(STORES.outbox, { keyPath: 'id' });
     };
     req.onsuccess = () => {
       openConnection = req.result;
