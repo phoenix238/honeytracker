@@ -460,3 +460,17 @@ describe('export', () => {
     expect(r.status).toBe(200);
   });
 });
+
+describe('AI examples', () => {
+  it('learns from your own sorting first, then what the old app carried over', async () => {
+    const { pickExamples } = await import('../aiSort');
+    const { txn } = await import('../../src/core/__tests__/fixtures');
+    const rows = [
+      txn({ counterparty: 'RYMAN', bucket: 'business_expense', classifiedBy: 'import' }),
+      txn({ counterparty: 'ZOOM', bucket: 'business_expense', classifiedBy: 'user' }),
+      txn({ counterparty: 'TESCO', bucket: 'personal', classifiedBy: 'ai' }),
+      txn({ counterparty: 'ADOBE', bucket: 'unreviewed', classifiedBy: null }),
+    ];
+    expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['ZOOM', 'RYMAN']);
+  });
+});

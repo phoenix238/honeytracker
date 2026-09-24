@@ -140,12 +140,17 @@ export function validate(results: readonly Record<string, unknown>[], batch: Tra
   return out;
 }
 
-/** Your own recent decisions, one per counterparty, as examples for the model to follow. */
+/**
+ * Your own decisions, one per counterparty, as examples for the model to follow — the ones you
+ * made here first, then the ones carried over from the old app (also yours, just made there).
+ */
 export function pickExamples(txns: readonly Transaction[], max = 60): Transaction[] {
   const seen = new Set<string>();
   const out: Transaction[] = [];
-  for (const t of txns) {
-    if (t.classifiedBy !== 'user' || t.bucket === 'unreviewed') continue;
+  const mine = (t: Transaction) => t.classifiedBy === 'user' || t.classifiedBy === 'import';
+  const ordered = [...txns.filter((t) => t.classifiedBy === 'user'), ...txns.filter((t) => t.classifiedBy === 'import')];
+  for (const t of ordered) {
+    if (!mine(t) || t.bucket === 'unreviewed' || !(t.counterparty || t.reference)) continue;
     const key = `${t.direction}:${(t.counterparty || t.reference).toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
