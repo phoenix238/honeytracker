@@ -3,7 +3,8 @@ import { starlingTokens, listAccounts, fetchLines, type BankLine } from './starl
 import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
-import type { Settings, Transaction } from '../src/core/types.js';
+import type { Invoice, Settings, Transaction } from '../src/core/types.js';
+import { invoiceForPayment } from '../src/core/invoices.js';
 
 // Pull everything new into the ledger. Safe to run any number of times: every row is keyed
 // on its source's own id, so a second run over the same window adds nothing. Runs daily from
@@ -14,6 +15,7 @@ export interface SyncResult {
   starling: { configured: boolean; accounts: number; newRows: number; autoClassified: number };
   cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
+  invoicesPaid: number;
   errors: string[];
 }
 
@@ -200,6 +202,39 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
   }
 }
 
+/**
+ * Mark an invoice paid by a ledger row, and file that row as the invoice's income. When you
+ * link it yourself, the row is classified whatever it was; when it's matched automatically,
+ * a classification you made yourself is kept.
+ */
+export async function linkInvoicePayment(repo: Repo, inv: Invoice, txnId: string, byUser: boolean): Promise<void> {
+  const t = await repo.getTransaction(txnId);
+  if (!t) return;
+  await repo.updateInvoice(inv.id, { paidTransactionId: t.id });
+  const mine = t.classifiedBy === 'user' || t.classifiedBy === 'import';
+  const note = t.note || `Invoice ${inv.number}${inv.clientName ? ` · ${inv.clientName}` : ''}`;
+  if (byUser || !mine) {
+    await repo.updateTransaction(t.id, { bucket: 'business_income', streamId: inv.streamId, category: null, classifiedBy: byUser ? 'user' : 'invoice', note, meta: { invoiceId: inv.id } });
+  } else {
+    await repo.updateTransaction(t.id, { meta: { invoiceId: inv.id } });
+  }
+}
+
+/** Payments that quote an open invoice's number, for its exact amount, settle it. */
+export async function matchInvoicePayments(repo: Repo): Promise<number> {
+  const invoices = await repo.listInvoices();
+  if (!invoices.some((i) => i.status === 'sent' && !i.paidTransactionId)) return 0;
+  let matched = 0;
+  for (const t of await repo.listTransactions()) {
+    const inv = invoiceForPayment(t, invoices);
+    if (!inv) continue;
+    await linkInvoicePayment(repo, inv, t.id, false);
+    inv.paidTransactionId = t.id; // so it isn't matched twice in this run
+    matched++;
+  }
+  return matched;
+}
+
 /** Receipts uploaded before their bank line arrived get another chance to match. */
 export async function matchLooseReceipts(repo: Repo): Promise<number> {
   const receipts = (await repo.listReceipts()).filter((r) => !r.transactionId);
@@ -222,6 +257,7 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
     starling: { configured: false, accounts: 0, newRows: 0, autoClassified: 0 },
     cstl: { configured: cstlConfigured(), matchedBank: 0, cashRows: 0, otherPaid: 0, unpricedSkipped: 0, voided: 0 },
     receiptsMatched: 0,
+    invoicesPaid: 0,
     errors: [],
   };
   try {
@@ -237,6 +273,11 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
     } catch (e) {
       result.errors.push(`CSTL: ${(e as Error).message}`);
     }
+  }
+  try {
+    result.invoicesPaid = await matchInvoicePayments(repo);
+  } catch (e) {
+    result.errors.push(`Invoices: ${(e as Error).message}`);
   }
   try {
     result.receiptsMatched = await matchLooseReceipts(repo);

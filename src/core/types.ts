@@ -24,7 +24,7 @@ export type Bucket = 'unreviewed' | 'business_income' | 'business_expense' | 'pe
 export type Source = 'starling' | 'cash' | 'manual' | 'cstl' | 'import';
 
 /** Who set the classification — so auto-classified rows can be spot-checked. */
-export type ClassifiedBy = 'user' | 'rule' | 'cstl' | 'import';
+export type ClassifiedBy = 'user' | 'rule' | 'cstl' | 'import' | 'invoice';
 
 export interface Transaction {
   id: string;
@@ -138,8 +138,68 @@ export interface TaxYearFacts {
   expectedProfitPence: Pence | null;
 }
 
+export interface InvoiceLine {
+  description: string;
+  /** Hours, days or units. Decimals allowed (2.5 hours). */
+  quantity: number;
+  /** Price per unit, in pence. */
+  unitPence: Pence;
+}
+
+/**
+ * A bill you've sent. It's a document, not money: nothing counts towards tax until the payment
+ * actually arrives (the cash basis). "Paid" isn't stored as a flag — an invoice is paid when a
+ * ledger row is linked to it, so the ledger stays the one record of money.
+ */
+export interface Invoice {
+  id: string;
+  /** e.g. "INV-0042" — also the payment reference the client is asked to use. */
+  number: string;
+  streamId: string | null;
+  clientName: string;
+  clientEmail: string;
+  clientAddress: string;
+  issueDate: IsoDate;
+  dueDate: IsoDate;
+  lines: InvoiceLine[];
+  notes: string;
+  status: 'draft' | 'sent' | 'void';
+  /** The ledger row (bank or cash) that paid it. */
+  paidTransactionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Who the invoices are from, and where to pay. */
+export interface BusinessProfile {
+  name: string;
+  businessName: string;
+  address: string;
+  email: string;
+  phone: string;
+  sortCode: string;
+  accountNumber: string;
+  invoicePrefix: string;
+  paymentTermsDays: number;
+  footer: string;
+}
+
+export const DEFAULT_PROFILE: BusinessProfile = {
+  name: '',
+  businessName: '',
+  address: '',
+  email: '',
+  phone: '',
+  sortCode: '',
+  accountNumber: '',
+  invoicePrefix: 'INV-',
+  paymentTermsDays: 14,
+  footer: 'Thank you!',
+};
+
 export interface Settings {
   name: string;
+  profile: BusinessProfile;
   /** Keyed by the calendar year the tax year starts in, e.g. "2026" for 2026/27. */
   taxYears: Record<string, TaxYearFacts>;
   /** Business expenses above this with no receipt are flagged. */
@@ -158,6 +218,7 @@ export const DEFAULT_TAX_YEAR_FACTS: TaxYearFacts = {
 
 export const DEFAULT_SETTINGS: Settings = {
   name: '',
+  profile: DEFAULT_PROFILE,
   taxYears: {},
   receiptThresholdPence: 0,
   cstlStreamId: null,

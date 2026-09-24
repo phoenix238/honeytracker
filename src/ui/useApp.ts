@@ -4,7 +4,7 @@ import { outbox, type OutboxItem } from './outbox';
 import { prepareFile } from './image';
 import { mkId } from '../core/id';
 import { taxPicture, type TaxPicture } from '../core/ledger';
-import type { Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
+import type { Invoice, Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
 
 // App state: the server's snapshot, held in React state and patched with each response.
 // The server is the book of record, so every change waits for its answer and shows its
@@ -39,6 +39,10 @@ export interface App {
   receiptToExpense: (id: string, body: Parameters<typeof api.receiptToExpense>[1]) => Promise<void>;
   deleteReceipt: (id: string) => Promise<void>;
   notify: (msg: string) => void;
+  saveInvoice: (id: string | null, d: Partial<Invoice>) => Promise<Invoice | null>;
+  deleteInvoice: (id: string) => Promise<boolean>;
+  payInvoice: (id: string, body: Parameters<typeof api.payInvoice>[1]) => Promise<boolean>;
+  unpayInvoice: (id: string) => Promise<boolean>;
 }
 
 export function useApp(): App {
@@ -172,6 +176,7 @@ export function useApp(): App {
         r.starling.configured ? `${r.starling.newRows} new from the bank` : 'Bank not connected',
         r.cstl.configured ? `${r.cstl.matchedBank + r.cstl.cashRows} CSTL sessions matched` : '',
         r.receiptsMatched ? `${r.receiptsMatched} receipts matched` : '',
+        r.invoicesPaid ? `${r.invoicesPaid} invoice${r.invoicesPaid === 1 ? '' : 's'} paid` : '',
       ].filter(Boolean);
       setNotice(bits.join(' · '));
       if (r.errors.length) setError(r.errors.join(' — '));
@@ -257,6 +262,29 @@ export function useApp(): App {
     receiptToExpense: async (id, body) => {
       const t = await run(() => api.receiptToExpense(id, body));
       if (t) await reload();
+    },
+    saveInvoice: async (id, d) => {
+      const saved = await run(() => (id ? api.updateInvoice(id, d) : api.createInvoice(d)));
+      if (saved) setData((x) => (x ? { ...x, invoices: [saved, ...x.invoices.filter((i) => i.id !== saved.id)] } : x));
+      return saved;
+    },
+    deleteInvoice: async (id) => {
+      const ok = await run(() => api.deleteInvoice(id));
+      if (ok) setData((x) => (x ? { ...x, invoices: x.invoices.filter((i) => i.id !== id) } : x));
+      return Boolean(ok);
+    },
+    payInvoice: async (id, body) => {
+      const res = await run(() => api.payInvoice(id, body));
+      if (res) {
+        setNotice(`${res.invoice.number} marked paid.`);
+        await reload();
+      }
+      return Boolean(res);
+    },
+    unpayInvoice: async (id) => {
+      const res = await run(() => api.unpayInvoice(id));
+      if (res) await reload();
+      return Boolean(res);
     },
     deleteReceipt: async (id) => {
       const ok = await run(() => api.deleteReceipt(id));

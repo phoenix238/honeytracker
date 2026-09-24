@@ -6,7 +6,7 @@ import { formatAmount, parsePence } from '../../core/money';
 import { parseHoneypotBackup, parseLocalV0, type ImportedItem } from '../../core/importers';
 import { STORES, getAll } from '../../storage/db';
 import { api } from '../api';
-import type { Stream } from '../../core/types';
+import type { BusinessProfile, Stream } from '../../core/types';
 import type { App } from '../useApp';
 
 const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'];
@@ -16,6 +16,7 @@ export function SettingsView({ app }: { app: App }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <Title>Settings</Title>
+      <ProfileSection app={app} />
       <StreamsSection app={app} />
       <ConnectionsSection app={app} />
       <RulesSection app={app} />
@@ -31,6 +32,7 @@ export function SettingsView({ app }: { app: App }) {
           </Field>
         </Card>
       </Section>
+      <StorageSection app={app} />
       <ImportSection app={app} />
       <Button tone="danger" onClick={app.signOut}>Sign out</Button>
     </div>
@@ -224,6 +226,83 @@ function ImportSection({ app }: { app: App }) {
         {status && <div style={{ fontSize: 12, color: T.text, lineHeight: 1.5 }}>{status}</div>}
         <Label>Export</Label>
         <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV from the Tax tab.</div>
+      </Card>
+    </Section>
+  );
+}
+
+function ProfileSection({ app }: { app: App }) {
+  const data = app.data!;
+  const [p, setP] = useState<BusinessProfile>(data.settings.profile);
+  const [next, setNext] = useState(String(data.invoiceCounter));
+  const [open, setOpen] = useState(!data.settings.profile.sortCode && !data.settings.profile.name);
+  const set = (k: keyof BusinessProfile) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    setP((x) => ({ ...x, [k]: k === 'paymentTermsDays' ? Number(e.target.value) || 0 : e.target.value }));
+  const save = async () => {
+    const saved = await api.saveSettingsWithCounter({ profile: p, nextInvoiceNumber: Number(next) || 1 }).catch((e: Error) => {
+      app.notify(e.message);
+      return null;
+    });
+    if (saved) {
+      await app.reload();
+      app.notify('Details saved.');
+      setOpen(false);
+    }
+  };
+  return (
+    <Section title="Your details (on invoices)" right={<Button tone="quiet" onClick={() => setOpen(!open)} style={{ padding: '2px 6px', fontSize: 12 }}>{open ? 'Close' : 'Edit'}</Button>}>
+      {!open ? (
+        <Card style={{ padding: 12, fontSize: 13, color: T.textMuted, lineHeight: 1.6 }}>
+          {p.businessName || p.name || 'No name yet'}
+          {p.sortCode || p.accountNumber ? ` · ${p.sortCode} ${p.accountNumber}` : ' · no bank details yet'}
+        </Card>
+      ) : (
+        <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Field label="Your name"><input style={inputStyle} value={p.name} onChange={set('name')} /></Field>
+          <Field label="Business / trading name (optional)"><input style={inputStyle} value={p.businessName} onChange={set('businessName')} /></Field>
+          <Field label="Address (optional)"><textarea style={{ ...inputStyle, minHeight: 56 }} value={p.address} onChange={set('address')} /></Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="Email"><input style={inputStyle} value={p.email} onChange={set('email')} /></Field>
+            <Field label="Phone"><input style={inputStyle} value={p.phone} onChange={set('phone')} /></Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="Sort code"><input style={inputStyle} inputMode="numeric" value={p.sortCode} onChange={set('sortCode')} placeholder="00-00-00" /></Field>
+            <Field label="Account number"><input style={inputStyle} inputMode="numeric" value={p.accountNumber} onChange={set('accountNumber')} /></Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <Field label="Number prefix"><input style={inputStyle} value={p.invoicePrefix} onChange={set('invoicePrefix')} /></Field>
+            <Field label="Next number"><input style={inputStyle} inputMode="numeric" value={next} onChange={(e) => setNext(e.target.value)} /></Field>
+            <Field label="Pay within (days)"><input style={inputStyle} inputMode="numeric" value={String(p.paymentTermsDays)} onChange={set('paymentTermsDays')} /></Field>
+          </div>
+          <Field label="Footer line"><input style={inputStyle} value={p.footer} onChange={set('footer')} /></Field>
+          <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>
+            Carrying on from old invoices? Set “Next number” one above your last invoice so numbers never repeat.
+          </div>
+          <Button tone="primary" onClick={save} disabled={app.busy}>Save details</Button>
+        </Card>
+      )}
+    </Section>
+  );
+}
+
+function StorageSection({ app }: { app: App }) {
+  const { usedBytes, limitBytes } = app.data!.storage;
+  const pct = limitBytes ? Math.min(100, (usedBytes / limitBytes) * 100) : 0;
+  const mb = (b: number) => `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+  const color = pct >= 90 ? T.danger : pct >= 75 ? T.accentBright : T.green;
+  return (
+    <Section title="Storage">
+      <Card>
+        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}>
+          <span>{mb(usedBytes)} of {mb(limitBytes)} used</span>
+          <span style={{ color, fontWeight: 700 }}>{pct.toFixed(pct < 1 ? 1 : 0)}%</span>
+        </div>
+        <div style={{ height: 8, background: T.bg, borderRadius: 4, marginTop: 8, overflow: 'hidden' }}>
+          <div style={{ width: `${Math.max(pct, 1)}%`, height: '100%', background: color }} />
+        </div>
+        <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+          Receipt photos take almost all the space (about 0.25 MB each). Home warns you at 75%. If you upgrade the Neon plan, set DB_STORAGE_LIMIT_MB in Vercel to the new size.
+        </div>
       </Card>
     </Section>
   );

@@ -64,7 +64,7 @@ beforeEach(async () => {
   process.env.CSTL_URL = 'https://cstl.test';
   process.env.CSTL_FINANCE_TOKEN = 'cstl-token';
   delete process.env.ANTHROPIC_API_KEY;
-  await db.query('TRUNCATE transactions, receipts, rules, streams, kv, audit_log CASCADE');
+  await db.query('TRUNCATE invoices, transactions, receipts, rules, streams, kv, audit_log CASCADE');
   setDb(db);
   feed.length = 0;
   cstlEvents.length = 0;
@@ -285,6 +285,80 @@ describe('import from the old app', () => {
     const { data } = await call('GET', '/api/state');
     expect(data.transactions).toHaveLength(3);
     expect(data.transactions.find((t: Transaction) => t.sourceId === 'f1').bucket).toBe('business_income');
+  });
+});
+
+describe('invoices', () => {
+  const lines = [{ description: 'Filming, half day', quantity: 1, unitPence: 25000 }, { description: 'Edit', quantity: 2.5, unitPence: 4000 }];
+
+  it('numbers, sends, and is paid by the bank payment that quotes it', async () => {
+    await signIn();
+    await call('PUT', '/api/settings', { profile: { businessName: 'Phoenix Media', sortCode: '60-83-71', accountNumber: '12345678' }, nextInvoiceNumber: 42 });
+    const stream = (await call('POST', '/api/streams', { name: 'Media' })).data;
+    const a = (await call('POST', '/api/invoices', { clientName: 'Studio Ltd', streamId: stream.id, lines })).data;
+    const b = (await call('POST', '/api/invoices', { clientName: 'Other', lines })).data;
+    expect([a.number, b.number]).toEqual(['INV-0042', 'INV-0043']);
+
+    // Can't send without a client.
+    const empty = (await call('POST', '/api/invoices', {})).data;
+    expect((await call('PATCH', `/api/invoices/${empty.id}`, { status: 'sent' })).status).toBe(400);
+    expect((await call('DELETE', `/api/invoices/${empty.id}`)).status).toBe(200);
+
+    expect((await call('PATCH', `/api/invoices/${a.id}`, { status: 'sent' })).data.status).toBe('sent');
+    const pdf = await handle(new Request(`${BASE}/api/invoices/${a.id}/pdf`, { headers: { cookie } }));
+    expect(pdf.headers.get('content-type')).toBe('application/pdf');
+    expect(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
+
+    // £250 + 2.5 × £40 = £350, paid with the reference.
+    feed.push(item('pay-1', 350, 'IN', daysAgo(0), { counterPartyName: 'STUDIO LTD', reference: 'inv0042' }));
+    const sync = await call('POST', '/api/sync', {});
+    expect(sync.data.invoicesPaid).toBe(1);
+    const state = (await call('GET', '/api/state')).data;
+    const paid = state.invoices.find((i: any) => i.id === a.id);
+    const row = state.transactions.find((t: Transaction) => t.sourceId === 'pay-1');
+    expect(paid.paidTransactionId).toBe(row.id);
+    expect(row).toMatchObject({ bucket: 'business_income', streamId: stream.id, classifiedBy: 'invoice' });
+
+    // A paid invoice is locked, and prints as a receipt.
+    expect((await call('PATCH', `/api/invoices/${a.id}`, { notes: 'x' })).status).toBe(400);
+    const receipt = await handle(new Request(`${BASE}/api/invoices/${a.id}/pdf`, { headers: { cookie } }));
+    expect(receipt.headers.get('content-disposition')).toContain('receipt-INV-0042');
+  });
+
+  it('records cash, links a chosen bank payment, and can be unpaid again', async () => {
+    await signIn();
+    const inv = (await call('POST', '/api/invoices', { clientName: 'Café', lines })).data;
+    await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+    const cash = await call('POST', `/api/invoices/${inv.id}/pay`, { date: thisYear() });
+    expect(cash.data.transaction).toMatchObject({ source: 'cash', amountPence: 35000, bucket: 'business_income' });
+    await call('POST', `/api/invoices/${inv.id}/unpay`, {});
+    let state = (await call('GET', '/api/state')).data;
+    expect(state.transactions).toHaveLength(0); // the cash row went with it
+
+    feed.push(item('pay-2', 350, 'IN', daysAgo(0), { counterPartyName: 'CAFE' }));
+    await call('POST', '/api/sync', {});
+    expect((await call('GET', '/api/state')).data.invoices[0].paidTransactionId).toBeNull(); // no reference: not automatic
+    const candidates = (await call('GET', `/api/invoices/${inv.id}/candidates`)).data;
+    expect(candidates).toHaveLength(1);
+    await call('POST', `/api/invoices/${inv.id}/pay`, { transactionId: candidates[0].id });
+    await call('POST', `/api/invoices/${inv.id}/unpay`, {});
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions).toHaveLength(1); // a bank row is never deleted
+    expect(state.transactions[0].meta.invoiceId).toBe('');
+  });
+
+  it('only deletes drafts', async () => {
+    await signIn();
+    const inv = (await call('POST', '/api/invoices', { clientName: 'X', lines })).data;
+    await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+    expect((await call('DELETE', `/api/invoices/${inv.id}`)).status).toBe(400);
+  });
+
+  it('reports storage use', async () => {
+    await signIn();
+    const { data } = await call('GET', '/api/state');
+    expect(data.storage.usedBytes).toBeGreaterThan(0);
+    expect(data.storage.limitBytes).toBe(512 * 1024 * 1024);
   });
 });
 

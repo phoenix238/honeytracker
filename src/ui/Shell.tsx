@@ -1,18 +1,20 @@
 import { useState, type ReactNode } from 'react';
 import { T, fonts } from './theme';
-import { HomeIcon, InboxIcon, ReceiptIcon, PotIcon, GearIcon } from './icons';
+import { HomeIcon, InboxIcon, ReceiptIcon, PotIcon, GearIcon, DocsIcon } from './icons';
 import { HomeView } from './views/HomeView';
 import { InboxView } from './views/InboxView';
 import { ReceiptsView } from './views/ReceiptsView';
 import { TaxView } from './views/TaxView';
 import { SettingsView } from './views/SettingsView';
+import { InvoicesView } from './views/InvoicesView';
 import type { App } from './useApp';
 
-export type View = 'home' | 'inbox' | 'receipts' | 'tax' | 'settings';
+export type View = 'home' | 'inbox' | 'invoices' | 'receipts' | 'tax' | 'settings';
 
 const TABS: { id: View; label: string; icon: (p: { size?: number; color?: string }) => ReactNode }[] = [
   { id: 'home', label: 'Home', icon: HomeIcon },
   { id: 'inbox', label: 'Money', icon: InboxIcon },
+  { id: 'invoices', label: 'Invoices', icon: DocsIcon },
   { id: 'receipts', label: 'Receipts', icon: ReceiptIcon },
   { id: 'tax', label: 'Tax', icon: PotIcon },
   { id: 'settings', label: 'Settings', icon: GearIcon },
@@ -52,6 +54,7 @@ export function Shell({ app }: { app: App }) {
 
         {view === 'home' && <HomeView app={app} go={setView} />}
         {view === 'inbox' && <InboxView app={app} />}
+        {view === 'invoices' && <InvoicesView app={app} />}
         {view === 'receipts' && <ReceiptsView app={app} />}
         {view === 'tax' && <TaxView app={app} />}
         {view === 'settings' && <SettingsView app={app} />}
@@ -66,7 +69,7 @@ export function Shell({ app }: { app: App }) {
               onClick={() => setView(id)}
               aria-label={label}
               aria-current={active ? 'page' : undefined}
-              style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 4px 12px', fontFamily: fonts.body }}
+              style={{ position: 'relative', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 2px 12px', fontFamily: fonts.body }}
             >
               <Icon size={22} color={active ? T.accent : T.textMuted} />
               <span style={{ fontSize: 10, fontWeight: active ? 700 : 600, color: active ? T.accent : T.textMuted }}>{label}</span>

@@ -8,9 +8,14 @@ import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
+import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
+import { buildInvoicePdf } from './invoicePdf.js';
+import { linkInvoicePayment } from './sync.js';
 import { isCategory } from '../src/core/hmrc.js';
 import { taxYearBounds, taxYearOf, today, withinBounds } from '../src/core/dates.js';
-import type { Bucket, Direction, Settings, Stream, TaxYearFacts, Transaction } from '../src/core/types.js';
+import type { Bucket, BusinessProfile, Direction, Invoice, InvoiceLine, Settings, Stream, TaxYearFacts, Transaction } from '../src/core/types.js';
+import { DEFAULT_PROFILE } from '../src/core/types.js';
+import { addDays } from '../src/core/dates.js';
 
 // The whole API as one web-standard handler: Request in, Response out. The Vercel function
 // and the local dev server both just call handle(), and the tests call it directly.
@@ -78,6 +83,57 @@ async function dropCstlOther(r: Repo, bookingId: string): Promise<void> {
   await r.setKv('cstl:other', list.filter((x) => x.bookingId !== bookingId));
 }
 
+/** The database plan's size limit. Neon's free plan is 0.5 GB; set DB_STORAGE_LIMIT_MB after upgrading. */
+function storageLimitBytes(): number {
+  const mb = Number(process.env.DB_STORAGE_LIMIT_MB);
+  return (Number.isFinite(mb) && mb > 0 ? mb : 512) * 1024 * 1024;
+}
+
+function invoiceDraft(b: Record<string, unknown>, current?: Invoice, terms = 14) {
+  const lines: InvoiceLine[] = [];
+  if (b.lines !== undefined) {
+    if (!Array.isArray(b.lines) || b.lines.length > 50) throw new HttpError(400, 'Up to 50 lines per invoice');
+    for (const raw of b.lines as Record<string, unknown>[]) {
+      const quantity = Number(raw?.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100_000) throw new HttpError(400, 'Each line needs a quantity above zero');
+      lines.push({ description: str(raw?.description, 500), quantity: Math.round(quantity * 100) / 100, unitPence: pence(raw?.unitPence) });
+    }
+  }
+  const issueDate = b.issueDate !== undefined ? (isDate(b.issueDate) ? b.issueDate : null) : current?.issueDate ?? today();
+  if (!issueDate) throw new HttpError(400, 'Bad invoice date');
+  const dueDate = b.dueDate !== undefined ? (isDate(b.dueDate) ? b.dueDate : null) : current?.dueDate ?? addDays(issueDate, terms);
+  if (!dueDate) throw new HttpError(400, 'Bad due date');
+  return {
+    streamId: b.streamId !== undefined ? (b.streamId ? str(b.streamId, 64) : null) : current?.streamId ?? null,
+    clientName: b.clientName !== undefined ? str(b.clientName, 200) : current?.clientName ?? '',
+    clientEmail: b.clientEmail !== undefined ? str(b.clientEmail, 200) : current?.clientEmail ?? '',
+    clientAddress: b.clientAddress !== undefined ? str(b.clientAddress, 500) : current?.clientAddress ?? '',
+    issueDate,
+    dueDate,
+    lines: b.lines !== undefined ? lines : current?.lines ?? [],
+    notes: b.notes !== undefined ? str(b.notes, 1000) : current?.notes ?? '',
+    status: (current?.status ?? 'draft') as Invoice['status'],
+  };
+}
+
+function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessProfile): BusinessProfile {
+  if (!b) return current;
+  const pick = (k: keyof BusinessProfile, max: number) => (b[k] !== undefined ? str(b[k], max) : (current[k] as string));
+  const terms = b.paymentTermsDays !== undefined ? Math.round(Number(b.paymentTermsDays)) : current.paymentTermsDays;
+  return {
+    name: pick('name', 120),
+    businessName: pick('businessName', 120),
+    address: pick('address', 400),
+    email: pick('email', 200),
+    phone: pick('phone', 60),
+    sortCode: pick('sortCode', 20),
+    accountNumber: pick('accountNumber', 20),
+    invoicePrefix: (pick('invoicePrefix', 12) || DEFAULT_PROFILE.invoicePrefix).replace(/[^\w-]/g, ''),
+    paymentTermsDays: Number.isFinite(terms) && terms >= 0 && terms <= 365 ? terms : current.paymentTermsDays,
+    footer: pick('footer', 500),
+  };
+}
+
 function config() {
   return {
     starling: starlingTokens().length > 0,
@@ -88,7 +144,7 @@ function config() {
 }
 
 async function state(r: Repo) {
-  const [transactions, streams, rules, receipts, settings, lastSync, cstlOther] = await Promise.all([
+  const [transactions, streams, rules, receipts, settings, lastSync, cstlOther, invoices, invoiceCounter, dbBytes] = await Promise.all([
     r.listTransactions(),
     r.listStreams(),
     r.listRules(),
@@ -96,8 +152,15 @@ async function state(r: Repo) {
     r.getSettings(),
     r.getKv<SyncResult>('sync:last'),
     r.getKv<unknown[]>('cstl:other'),
+    r.listInvoices(),
+    r.peekInvoiceCounter(),
+    r.databaseBytes().catch(() => 0),
   ]);
-  return { transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], config: config(), today: today() };
+  return {
+    transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], invoices, invoiceCounter,
+    storage: { usedBytes: dbBytes, limitBytes: storageLimitBytes() },
+    config: config(), today: today(),
+  };
 }
 
 type Handler = (req: Request, r: Repo, params: string[], url: URL) => Promise<Response>;
@@ -245,8 +308,15 @@ const routes: [string, RegExp, Handler][] = [
         expectedProfitPence: opt(f.expectedProfitPence),
       };
     }
+    const nb = b as Partial<Settings> & { nextInvoiceNumber?: unknown };
+    if (nb.nextInvoiceNumber !== undefined) {
+      const n = Math.round(Number(nb.nextInvoiceNumber));
+      if (!Number.isFinite(n) || n < 1 || n > 999_999) throw new HttpError(400, 'Invoice number must be 1 or more');
+      await r.setInvoiceCounter(n);
+    }
     const next: Settings = {
       name: b.name !== undefined ? str(b.name, 80) : current.name,
+      profile: profileFrom(b.profile, current.profile),
       receiptThresholdPence: b.receiptThresholdPence !== undefined ? pence(b.receiptThresholdPence) : current.receiptThresholdPence,
       cstlStreamId: b.cstlStreamId !== undefined ? (b.cstlStreamId ? str(b.cstlStreamId, 64) : null) : current.cstlStreamId,
       taxYears,
@@ -352,6 +422,97 @@ const routes: [string, RegExp, Handler][] = [
   ['DELETE', /^\/api\/receipts\/([\w-]+)$/, async (_req, r, [id]) => {
     await r.deleteReceipt(id!);
     return json({ ok: true });
+  }],
+
+  // ── Invoices ──────────────────────────────────────────────────────────────────────
+  ['POST', /^\/api\/invoices$/, async (req, r) => {
+    const b = await body(req);
+    const settings = await r.getSettings();
+    const draft = invoiceDraft(b, undefined, settings.profile.paymentTermsDays);
+    const number = await r.nextInvoiceNumber(settings.profile.invoicePrefix || DEFAULT_PROFILE.invoicePrefix);
+    return json(await r.insertInvoice(draft, number), 201);
+  }],
+  ['PATCH', /^\/api\/invoices\/([\w-]+)$/, async (req, r, [id]) => {
+    const cur = await r.getInvoice(id!);
+    if (!cur) throw new HttpError(404, 'Not found');
+    if (cur.paidTransactionId) throw new HttpError(400, 'This invoice is paid — mark it unpaid first to change it.');
+    const b = await body(req);
+    const next = invoiceDraft(b, cur);
+    if (b.status !== undefined) {
+      if (!['draft', 'sent', 'void'].includes(String(b.status))) throw new HttpError(400, 'Unknown status');
+      next.status = b.status as Invoice['status'];
+    }
+    if (next.status === 'sent' && (!next.clientName.trim() || next.lines.length === 0 || invoiceTotal(next) <= 0)) {
+      throw new HttpError(400, 'An invoice needs a client and at least one line with an amount before it’s sent.');
+    }
+    return json(await r.updateInvoice(id!, next));
+  }],
+  ['DELETE', /^\/api\/invoices\/([\w-]+)$/, async (_req, r, [id]) => {
+    const cur = await r.getInvoice(id!);
+    if (!cur) throw new HttpError(404, 'Not found');
+    // A sent invoice is part of your records — void it instead, so its number isn't reused.
+    if (cur.status !== 'draft') throw new HttpError(400, 'Only drafts can be deleted — void a sent invoice instead.');
+    await r.deleteInvoice(id!);
+    return json({ ok: true });
+  }],
+  // Settle an invoice: with a bank payment already in the ledger, or as cash received.
+  ['POST', /^\/api\/invoices\/([\w-]+)\/pay$/, async (req, r, [id]) => {
+    const inv = await r.getInvoice(id!);
+    if (!inv) throw new HttpError(404, 'Not found');
+    if (inv.paidTransactionId) throw new HttpError(400, 'Already paid');
+    if (inv.status === 'void') throw new HttpError(400, 'This invoice is void');
+    const b = await body(req);
+    let txnId: string;
+    if (b.transactionId) {
+      const t = await r.getTransaction(str(b.transactionId, 64));
+      if (!t || t.direction !== 'in') throw new HttpError(400, 'Pick a payment that came in');
+      if (t.meta.invoiceId) throw new HttpError(400, 'That payment already settles another invoice');
+      txnId = t.id;
+    } else {
+      const date = isDate(b.date) ? b.date : today();
+      const created = await r.insertTransaction({
+        date, amountPence: invoiceTotal(inv), direction: 'in', source: 'cash', sourceId: null,
+        counterparty: inv.clientName, reference: inv.number, bucket: 'business_income', streamId: inv.streamId,
+        category: null, businessPercent: 100, note: `Invoice ${inv.number} · ${str(b.method, 30) || 'cash'}`,
+        classifiedBy: 'invoice', meta: { invoiceId: inv.id },
+      });
+      if (!created) throw new HttpError(500, 'Payment not saved');
+      txnId = created.id;
+    }
+    await linkInvoicePayment(r, inv, txnId, true);
+    return json({ invoice: await r.getInvoice(inv.id), transaction: await r.getTransaction(txnId) });
+  }],
+  ['POST', /^\/api\/invoices\/([\w-]+)\/unpay$/, async (_req, r, [id]) => {
+    const inv = await r.getInvoice(id!);
+    if (!inv?.paidTransactionId) throw new HttpError(400, 'Not paid');
+    const t = await r.getTransaction(inv.paidTransactionId);
+    await r.updateInvoice(inv.id, { paidTransactionId: null });
+    if (t) {
+      // A cash payment recorded only for this invoice goes with it; a bank row stays (it's the bank's record).
+      if (t.source === 'cash' && t.meta.invoiceId === inv.id) await r.deleteTransaction(t.id);
+      else await r.updateTransaction(t.id, { meta: { invoiceId: '' } });
+    }
+    return json(await r.getInvoice(inv.id));
+  }],
+  ['GET', /^\/api\/invoices\/([\w-]+)\/candidates$/, async (_req, r, [id]) => {
+    const inv = await r.getInvoice(id!);
+    if (!inv) throw new HttpError(404, 'Not found');
+    return json(paymentCandidates(inv, await r.listTransactions()).slice(0, 10));
+  }],
+  ['GET', /^\/api\/invoices\/([\w-]+)\/pdf$/, async (_req, r, [id], url) => {
+    const inv = await r.getInvoice(id!);
+    if (!inv) throw new HttpError(404, 'Not found');
+    const paid = inv.paidTransactionId ? await r.getTransaction(inv.paidTransactionId) : null;
+    const settings = await r.getSettings();
+    const bytes = await buildInvoicePdf(inv, settings.profile, paid?.date ?? null);
+    const kind = paid ? 'receipt' : 'invoice';
+    return new Response(new Uint8Array(bytes), {
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `${url.searchParams.get('download') ? 'attachment' : 'inline'}; filename="${kind}-${inv.number.replace(/[^\w-]/g, '')}.pdf"`,
+        'Cache-Control': 'no-store',
+      },
+    });
   }],
 
   // ── Sync ──────────────────────────────────────────────────────────────────────────

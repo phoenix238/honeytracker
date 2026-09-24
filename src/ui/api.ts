@@ -1,4 +1,4 @@
-import type { Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
+import type { Invoice, Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
 import type { ImportedItem } from '../core/importers';
 
 // The app's only door to the server. Every call either returns data or throws an ApiError
@@ -32,6 +32,7 @@ export interface SyncResult {
   starling: { configured: boolean; accounts: number; newRows: number; autoClassified: number };
   cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
+  invoicesPaid: number;
   errors: string[];
 }
 
@@ -50,6 +51,9 @@ export interface AppState {
   settings: Settings;
   lastSync: SyncResult | null;
   cstlOther: CstlOther[];
+  invoices: Invoice[];
+  invoiceCounter: number;
+  storage: { usedBytes: number; limitBytes: number };
   config: { starling: boolean; cstl: boolean; receiptsAi: boolean; cron: boolean };
   today: string;
 }
@@ -83,9 +87,19 @@ export const api = {
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),
   deleteReceipt: (id: string) => call<{ ok: true }>('DELETE', `/api/receipts/${id}`),
 
+  createInvoice: (d: Partial<Invoice>) => call<Invoice>('POST', '/api/invoices', d),
+  updateInvoice: (id: string, d: Partial<Invoice>) => call<Invoice>('PATCH', `/api/invoices/${id}`, d),
+  deleteInvoice: (id: string) => call<{ ok: true }>('DELETE', `/api/invoices/${id}`),
+  payInvoice: (id: string, body: { transactionId?: string; date?: string; method?: string }) =>
+    call<{ invoice: Invoice; transaction: Transaction }>('POST', `/api/invoices/${id}/pay`, body),
+  unpayInvoice: (id: string) => call<Invoice>('POST', `/api/invoices/${id}/unpay`, {}),
+  invoiceCandidates: (id: string) => call<Transaction[]>('GET', `/api/invoices/${id}/candidates`),
+  saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
+
   importItems: (items: ImportedItem[], streamId: string | null) =>
     call<{ linked: number; created: number; skipped: number; receipts: number }>('POST', '/api/import', { items, streamId }),
 };
 
 export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;
+export const invoicePdfUrl = (id: string, download = false) => `/api/invoices/${id}/pdf${download ? '?download=1' : ''}`;
 export const exportCsvUrl = (year: number) => `/api/export.csv?year=${year}`;

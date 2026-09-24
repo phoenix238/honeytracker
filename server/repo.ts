@@ -1,5 +1,7 @@
 import type { Db } from './db.js';
 import type {
+  Invoice,
+  InvoiceLine,
   Bucket,
   ClassifiedBy,
   Direction,
@@ -11,7 +13,8 @@ import type {
   Stream,
   Transaction,
 } from '../src/core/types.js';
-import { DEFAULT_SETTINGS } from '../src/core/types.js';
+import { DEFAULT_PROFILE, DEFAULT_SETTINGS } from '../src/core/types.js';
+import { formatInvoiceNumber } from '../src/core/invoices.js';
 import { mkId } from '../src/core/id.js';
 
 // Typed data access. Everything that touches SQL lives here, so the rest of the server
@@ -77,6 +80,28 @@ function toRule(r: Row): Rule {
     createdAt: s(r.created_at),
   };
 }
+
+function toInvoice(r: Row): Invoice {
+  const lines = (typeof r.lines === 'string' ? JSON.parse(r.lines) : r.lines ?? []) as InvoiceLine[];
+  return {
+    id: s(r.id),
+    number: s(r.number),
+    streamId: r.stream_id == null ? null : s(r.stream_id),
+    clientName: s(r.client_name),
+    clientEmail: s(r.client_email),
+    clientAddress: s(r.client_address),
+    issueDate: s(r.issue_date),
+    dueDate: s(r.due_date),
+    lines,
+    notes: s(r.notes),
+    status: s(r.status) as Invoice['status'],
+    paidTransactionId: r.paid_transaction_id == null ? null : s(r.paid_transaction_id),
+    createdAt: s(r.created_at),
+    updatedAt: s(r.updated_at),
+  };
+}
+
+export type InvoiceDraft = Omit<Invoice, 'id' | 'number' | 'paidTransactionId' | 'createdAt' | 'updatedAt'>;
 
 const TXN_COLS = 'id, date, amount_pence, direction, source, source_id, counterparty, reference, bucket, stream_id, category, business_percent, note, classified_by, meta, created_at, updated_at';
 const RECEIPT_COLS = 'id, uploaded_at, filename, mime, merchant, date, total_pence, vat_pence, suggested_category, description, transaction_id';
@@ -258,7 +283,71 @@ export function repo(db: Db) {
     },
     async getSettings(): Promise<Settings> {
       const stored = await api.getKv<Partial<Settings>>('settings');
-      return { ...DEFAULT_SETTINGS, ...(stored ?? {}), taxYears: { ...(stored?.taxYears ?? {}) } };
+      return {
+        ...DEFAULT_SETTINGS,
+        ...(stored ?? {}),
+        profile: { ...DEFAULT_PROFILE, ...(stored?.profile ?? {}) },
+        taxYears: { ...(stored?.taxYears ?? {}) },
+      };
+    },
+
+    // ── Invoices ──────────────────────────────────────────────────────────────────────
+    async listInvoices(): Promise<Invoice[]> {
+      return (await db.query<Row>('SELECT * FROM invoices ORDER BY issue_date DESC, number DESC')).map(toInvoice);
+    },
+    async getInvoice(id: string): Promise<Invoice | null> {
+      const [row] = await db.query<Row>('SELECT * FROM invoices WHERE id = $1', [id]);
+      return row ? toInvoice(row) : null;
+    },
+    /** The next number, taken atomically so two invoices can never share one. */
+    async nextInvoiceNumber(prefix: string): Promise<string> {
+      for (;;) {
+        const [row] = await db.query<Row>(
+          `INSERT INTO kv (key, value) VALUES ('invoice:next', '2'::jsonb)
+           ON CONFLICT (key) DO UPDATE SET value = to_jsonb((kv.value #>> '{}')::int + 1)
+           RETURNING (value #>> '{}')::int - 1 AS n`,
+        );
+        const number = formatInvoiceNumber(prefix, Number(row!.n));
+        // Skip any number already used (e.g. the counter was reset below an old invoice).
+        const [taken] = await db.query<Row>('SELECT 1 FROM invoices WHERE number = $1', [number]);
+        if (!taken) return number;
+      }
+    },
+    async peekInvoiceCounter(): Promise<number> {
+      return Number((await api.getKv<number>('invoice:next')) ?? 1);
+    },
+    async setInvoiceCounter(n: number): Promise<void> {
+      await api.setKv('invoice:next', n);
+    },
+    async insertInvoice(d: InvoiceDraft, number: string): Promise<Invoice> {
+      const id = mkId();
+      const at = now();
+      await db.query(
+        `INSERT INTO invoices (id, number, stream_id, client_name, client_email, client_address, issue_date, due_date, lines, notes, status, paid_transaction_id, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,NULL,$12,$12)`,
+        [id, number, d.streamId, d.clientName, d.clientEmail, d.clientAddress, d.issueDate, d.dueDate, JSON.stringify(d.lines), d.notes, d.status, at],
+      );
+      return (await api.getInvoice(id))!;
+    },
+    async updateInvoice(id: string, patch: Partial<InvoiceDraft> & { paidTransactionId?: string | null }): Promise<Invoice | null> {
+      const cur = await api.getInvoice(id);
+      if (!cur) return null;
+      const n = { ...cur, ...patch };
+      await db.query(
+        `UPDATE invoices SET stream_id=$2, client_name=$3, client_email=$4, client_address=$5, issue_date=$6, due_date=$7,
+           lines=$8::jsonb, notes=$9, status=$10, paid_transaction_id=$11, updated_at=$12 WHERE id=$1`,
+        [id, n.streamId, n.clientName, n.clientEmail, n.clientAddress, n.issueDate, n.dueDate, JSON.stringify(n.lines), n.notes, n.status, n.paidTransactionId, now()],
+      );
+      return api.getInvoice(id);
+    },
+    async deleteInvoice(id: string): Promise<void> {
+      await db.query('DELETE FROM invoices WHERE id = $1', [id]);
+    },
+
+    /** How much space the database is using, in bytes. */
+    async databaseBytes(): Promise<number> {
+      const [row] = await db.query<Row>('SELECT pg_database_size(current_database()) AS bytes');
+      return Number(row?.bytes ?? 0);
     },
     async saveSettings(settings: Settings): Promise<void> {
       await api.setKv('settings', settings);

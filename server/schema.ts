@@ -76,4 +76,21 @@ export const SCHEMA: string[] = [
     detail jsonb NOT NULL DEFAULT '{}'::jsonb
   )`,
   `CREATE INDEX IF NOT EXISTS audit_log_txn ON audit_log (transaction_id)`,
+  // Invoices are documents; the money they bring in lives in transactions, linked here.
+  `CREATE TABLE IF NOT EXISTS invoices (
+    id text PRIMARY KEY,
+    number text NOT NULL UNIQUE,
+    stream_id text REFERENCES streams(id) ON DELETE SET NULL,
+    client_name text NOT NULL DEFAULT '',
+    client_email text NOT NULL DEFAULT '',
+    client_address text NOT NULL DEFAULT '',
+    issue_date text NOT NULL,
+    due_date text NOT NULL,
+    lines jsonb NOT NULL DEFAULT '[]'::jsonb,
+    notes text NOT NULL DEFAULT '',
+    status text NOT NULL DEFAULT 'draft',
+    paid_transaction_id text REFERENCES transactions(id) ON DELETE SET NULL,
+    created_at text NOT NULL,
+    updated_at text NOT NULL
+  )`,
 ];

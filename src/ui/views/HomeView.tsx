@@ -3,7 +3,8 @@ import { T, fonts } from '../theme';
 import { Button, Card, Label, Money, Section, Stat, Title, fmtDate, Sheet, Field, inputStyle, Chip } from '../components';
 import { CameraIcon, RefreshIcon } from '../icons';
 import { taxYearLabel } from '../../core/dates';
-import { parsePence } from '../../core/money';
+import { parsePence, formatGBP } from '../../core/money';
+import { owedSummary } from '../../core/invoices';
 import type { App } from '../useApp';
 import type { View } from '../Shell';
 
@@ -19,6 +20,8 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
   const next = p.upcoming[0];
   const nextDateTotal = next ? p.upcoming.filter((x) => x.due === next.due).reduce((a, x) => a + x.amountPence, 0) : 0;
   const todo = p.review.unreviewed + p.review.missingReceipts + p.review.noStream;
+  const owed = owedSummary(data.invoices, data.today);
+  const storageUsed = data.storage.limitBytes ? data.storage.usedBytes / data.storage.limitBytes : 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -48,6 +51,27 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
           <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>
             {p.upcoming.filter((x) => x.due === next.due).map((x) => x.label).join(' + ')}
             {p.upcoming.some((x) => x.due === next.due && x.estimated) ? ' · estimate' : ''}
+          </div>
+        </Card>
+      )}
+
+      {storageUsed >= 0.75 && (
+        <Card onClick={() => go('settings')} style={{ borderColor: T.danger }}>
+          <Label color={T.danger}>Storage {Math.round(storageUsed * 100)}% full</Label>
+          <div style={{ fontSize: 13, color: T.text, marginTop: 6, lineHeight: 1.5 }}>
+            The database is filling up. Before it’s full, upgrade the Neon plan (or ask to move old receipt photos to Google Drive) — once full, new saves are refused.
+          </div>
+        </Card>
+      )}
+
+      {owed.count > 0 && (
+        <Card onClick={() => go('invoices')} style={{ borderColor: owed.overdueCount ? T.danger + '88' : T.border }}>
+          <Label color={owed.overdueCount ? T.danger : T.textMuted}>Owed to you</Label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 6 }}>
+            <Money pence={owed.totalPence} size={22} color={T.text} />
+            <span style={{ fontSize: 12, color: owed.overdueCount ? T.danger : T.textMuted }}>
+              {owed.overdueCount ? `${formatGBP(owed.overduePence)} overdue` : `${owed.count} invoice${owed.count === 1 ? '' : 's'}`}
+            </span>
           </div>
         </Card>
       )}
