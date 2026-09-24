@@ -1,5 +1,5 @@
-import { datesClose } from './dates';
-import type { IsoDate, Pence } from './types';
+import { datesClose } from './dates.js';
+import type { IsoDate, Pence } from './types.js';
 
 // Flag records that look like accidental duplicates: same label, amounts within a penny,
 // dates within six days. Ported from the Honeypot0101 rewrite that replaced an O(n^2)

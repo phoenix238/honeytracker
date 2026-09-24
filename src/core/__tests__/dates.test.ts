@@ -5,7 +5,7 @@ import {
   taxYearLabel,
   withinBounds,
   datesClose,
-} from '../dates';
+} from '../dates.js';
 
 describe('ukTaxYearStart', () => {
   it('rolls over on 6 April, not 1 January', () => {
@@ -39,5 +39,31 @@ describe('datesClose', () => {
     expect(datesClose('2026-03-01', '2026-03-06')).toBe(true);
     expect(datesClose('2026-03-01', '2026-03-07')).toBe(false);
     expect(datesClose('2026-03-01', '')).toBe(false);
+  });
+});
+
+import { londonDate, taxYearOf, mtdQuarters, daysInclusive, addDays } from '../dates.js';
+
+describe('londonDate / taxYearOf', () => {
+  it('files a just-after-midnight BST payment on 6 April in the new tax year', () => {
+    // 00:30 BST on 6 Apr 2026 is 23:30 UTC on 5 Apr.
+    expect(londonDate('2026-04-05T23:30:00Z')).toBe('2026-04-06');
+    expect(taxYearOf(londonDate('2026-04-05T23:30:00Z'))).toBe(2026);
+    expect(taxYearOf('2026-04-05')).toBe(2025);
+  });
+  it('uses GMT in winter', () => {
+    expect(londonDate('2026-01-15T23:30:00Z')).toBe('2026-01-15');
+  });
+});
+
+describe('mtdQuarters', () => {
+  it('uses the standard update periods and deadlines', () => {
+    const q = mtdQuarters(2026);
+    expect(q[0]).toMatchObject({ from: '2026-04-06', to: '2026-07-05', deadline: '2026-08-07' });
+    expect(q[3]).toMatchObject({ from: '2027-01-06', to: '2027-04-05', deadline: '2027-05-07' });
+  });
+  it('counts days and shifts dates', () => {
+    expect(daysInclusive('2026-04-06', '2027-04-05')).toBe(365);
+    expect(addDays('2026-12-30', 3)).toBe('2027-01-02');
   });
 });

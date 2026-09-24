@@ -1,4 +1,4 @@
-import type { Pence } from './types';
+import type { Pence } from './types.js';
 
 // Money is integer pence, never a float. The old app compared amounts with a `< 0.02`
 // tolerance precisely because 0.1 + 0.2 !== 0.3 in floating point; integers remove the

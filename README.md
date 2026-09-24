@@ -1,60 +1,63 @@
 # Honey Tracker
 
-Freelance finance tracker — a ground-up rebuild of Honeypot0101, learning from its mistakes.
+Phoenix's finance hub. The bank feed is the backbone: every transaction lands in one
+ledger, you say what each one is, and the tax return adds itself up as you go.
+
+## How it fits together
+
+```
+ Starling (all accounts) ──┐
+ CSTL paid sessions ───────┤     ONE LEDGER (Postgres)            OUT
+ Cash you type in ─────────┼──►  every row: business income /  ──► Tax pot target + set-aside %
+ Receipts (snap / upload) ─┘     cost (HMRC category) /            HMRC payment calendar
+                                 personal / transfer, a stream,    SA103 figures per stream
+                                 and its receipt                   MTD quarterly figures
+                                                                   CSV for an accountant
+```
+
+- **CSTL** runs the practice and owns nothing tax-related. It exposes a money-only feed
+  (`/api/finance/events`); Honey uses the Starling transaction id to label the bank row
+  it already has, adds cash sessions, and lists card/other ones for you to decide.
+- **Honeypot0101** is retired: import its "Export backup" file once (Settings → Bring in
+  old records). Records are matched to their bank lines, not added twice.
 
 ## Principles
 
-- **Store facts, derive numbers.** Records hold gross amounts and dates — never a frozen
-  `tax` or `net`. Every derived figure (tax stash, take-home, taxable profit) is computed on
-  read from the current settings by `src/core/tax.ts`. This is why the old app's tax-rate
-  setting silently did nothing and old records stayed wrong: it stored derived numbers in a
-  dozen places. Here there is one derivation, applied live.
-- **Money is integer pence, never a float.** Removes the rounding class of bugs (the old
-  app compared amounts with a `< 0.02` tolerance to hide them).
-- **Money-first, not invoice-first.** Income counts on its own — from the bank feed or as
-  cash — with or without an invoice. Invoices and receipts are optional documents, not the
-  gatekeeper for income to be counted.
-- **Local-first.** The device is the fast, authoritative copy; a confirmed cloud backup
-  (planned) provides cross-device sync and safety. See "Roadmap".
+- **Store facts, derive numbers.** Rows hold what happened and how you classified it —
+  never a frozen tax figure. `src/core/ledger.ts` and `src/core/ukTax.ts` derive every
+  number on read, so changing a classification or a setting fixes every total at once.
+- **Money is integer pence.**
+- **The bank is the record.** Bank rows can't be deleted or edited, only classified;
+  cash and typed rows are the only ones you can change. Every classification change is
+  kept in an audit log (Money → a row → Show change history).
+- **Real tax, not a flat 20%.** Personal allowance and its taper, 20/40/45% bands,
+  Class 4 NI, a PAYE job, the £1,000 trading allowance, and payments on account — the
+  thing that makes January hurt. England/Wales/NI rates; limits are listed on the Tax tab.
+- **Nothing fails silently.** Every save waits for the server and shows its error.
+  Receipts snapped with no signal wait on the phone and upload by themselves.
 
 ## Stack
 
-Vite + TypeScript (strict) + React. Pure, tested domain logic in `src/core/`; UI in
-`src/ui/`.
+Vite + React + TypeScript (strict). One Vercel Function (`api/index.ts` → `server/router.ts`)
+serves the whole API. Postgres on Neon in production; PGlite (Postgres in WASM) locally
+and in tests, so the tests run the production SQL. Receipts are read by Claude.
 
 ```
 npm install
-npm run dev        # local dev server
-npm test           # vitest — the accuracy guarantee for all money logic
+npm run dev        # app + API + a local Postgres in .data/ — set APP_PASSWORD and
+                   # SESSION_SECRET in .env.local first
+npm test           # core tax/ledger logic + the API end to end
 npm run typecheck
-npm run build      # production build (base path /honeytracker/ for GitHub Pages)
+npm run build
 ```
 
 ## Layout
 
-- `src/core/` — pure, framework-free, fully tested:
-  - `types.ts` — the domain model (facts, not derived numbers)
-  - `money.ts` — integer-pence parsing, formatting, arithmetic
-  - `dates.ts` — UK tax-year boundaries (6 Apr–5 Apr) and helpers
-  - `tax.ts` — the single derivation of every money figure from facts + settings
-  - `duplicates.ts` — grouped duplicate detection (ported and proven equivalent)
-- `src/ui/` — React screens. Currently a minimal Home that derives totals live from sample
-  facts, demonstrating the store-facts/derive-numbers principle end to end.
+- `src/core/` — pure, framework-free, tested: `types` (the ledger model), `ukTax` (the tax
+  engine), `ledger` (every derived figure), `hmrc` (categories ↔ MTD fields ↔ SA103 boxes),
+  `rules`, `receiptMatch`, `importers`, `exportCsv`, `dates`, `money`.
+- `server/` — `router` (the API), `repo` (all SQL), `schema`, `sync` (Starling + CSTL),
+  `starling`, `receipts` (Claude), `auth`.
+- `src/ui/` — the app: Home, Money (inbox), Receipts, Tax, Settings.
 
-## Roadmap
-
-Phase 1 (this scaffold): project + tested core logic + a minimal Home. Next:
-
-1. **Storage** — IndexedDB repository (device-authoritative), photos in IndexedDB from day
-   one (never localStorage — that quota overflow silently lost saves in the old app).
-2. **Confirmed cloud sync** — Cloudflare Worker + D1, writes that report success or a
-   visible error, never a silent failure.
-3. **Full UI** — built from the agreed information architecture (four objects; Home / Money
-   / Documents / More; bank and cash income pathways).
-4. **Importer** — one-time migration from the old app's data.
-
-## Deployment
-
-Live at Vercel, auto-deploying from `main` (project: `honeytracker-web` on the `phoenix`
-team). Every push to `main` builds and redeploys automatically once Vercel's Git connection
-picks it up.
+Setup and deployment: **[SETUP.md](./SETUP.md)**.

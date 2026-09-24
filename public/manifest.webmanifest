@@ -1,0 +1,17 @@
+{
+  "name": "Honey",
+  "short_name": "Honey",
+  "description": "Finances and tax, kept straight all year.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16140F",
+  "theme_color": "#16140F",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
