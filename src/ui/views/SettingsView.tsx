@@ -24,6 +24,8 @@ export function SettingsView({ app }: { app: App }) {
       <ConnectionsSection app={app} />
       <GoogleSection app={app} />
       <RulesSection app={app} />
+      <TaxPotSection app={app} />
+      <CalendarSection app={app} />
       <Section title="Receipts">
         <Card>
           <Field label="Ask for a receipt on business costs over (£)" hint="HMRC expects records for every cost; set 0 to be asked about all of them.">
@@ -389,6 +391,79 @@ function StorageSection({ app }: { app: App }) {
         <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.5 }}>
           Receipt photos take almost all the space (about 0.25 MB each). Home warns you at 75%. If you upgrade the Neon plan, set DB_STORAGE_LIMIT_MB in Vercel to the new size.
         </div>
+      </Card>
+    </Section>
+  );
+}
+
+/** How much to put aside: a fixed habit, or Honey's estimate of the actual tax. */
+function TaxPotSection({ app }: { app: App }) {
+  const data = app.data!;
+  const current = data.settings.setAsidePercent;
+  const [pct, setPct] = useState(String(current ?? 20));
+  const estimate = app.picture?.setAside.estimatePercent ?? 0;
+  return (
+    <Section title="Tax pot">
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Chip active={current != null} onClick={() => app.saveSettings({ setAsidePercent: Number(pct) || 20 })}>A fixed share of every payment</Chip>
+          <Chip active={current == null} onClick={() => app.saveSettings({ setAsidePercent: null })}>Let Honey work it out ({estimate}% now)</Chip>
+        </div>
+        {current != null && (
+          <Field label="Put aside (%)" hint="Of every business payment that comes in. Home still shows Honey’s estimate of the real tax beside it, so you can see if it’s enough.">
+            <input style={inputStyle} inputMode="decimal" value={pct} onChange={(e) => setPct(e.target.value)} onBlur={() => app.saveSettings({ setAsidePercent: Number(pct) || 0 })} />
+          </Field>
+        )}
+      </Card>
+    </Section>
+  );
+}
+
+/** The private iCal link, so sessions and shifts can be picked straight into an invoice. */
+function CalendarSection({ app }: { app: App }) {
+  const data = app.data!;
+  const [url, setUrl] = useState(data.settings.calendarUrl);
+  const [test, setTest] = useState('');
+  const linked = Boolean(data.settings.calendarUrl);
+  const save = async (value: string) => {
+    await app.saveSettings({ calendarUrl: value.trim() });
+    if (!value.trim()) return setTest('');
+    setTest('Checking…');
+    const from = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    await api
+      .calendarEvents(from, data.today)
+      .then((r) => setTest(`Linked — ${r.events.length} event${r.events.length === 1 ? '' : 's'} in the last 30 days.`))
+      .catch((e: Error) => setTest(e.message));
+  };
+  return (
+    <Section title="Calendar">
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
+          Link your calendar and invoices can take sessions or shifts straight from it (Invoices → a new invoice → 📅 From calendar). Honey only reads it.
+          <br />
+          <strong style={{ color: T.text }}>Google Calendar</strong>, on a computer: calendar.google.com → ⚙ Settings → click your calendar on the left → “Integrate calendar” → copy the{' '}
+          <em>Secret address in iCal format</em>.
+          <br />
+          <strong style={{ color: T.text }}>Apple Calendar</strong>: the calendar’s ⓘ → Public Calendar → Share Link.
+        </div>
+        <Field label="Private iCal link" hint="Keep it private — anyone with this link can read that calendar.">
+          <input
+            style={inputStyle}
+            value={linked && url === data.settings.calendarUrl ? `${url.slice(0, 32)}…` : url}
+            onFocus={() => setUrl(data.settings.calendarUrl)}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://calendar.google.com/calendar/ical/…/basic.ics"
+          />
+        </Field>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button tone="primary" disabled={app.busy || !url.trim() || url === data.settings.calendarUrl} onClick={() => save(url)} style={{ flex: 1 }}>
+            {linked ? 'Save new link' : 'Link calendar'}
+          </Button>
+          {linked && (
+            <Button tone="quiet" onClick={() => { setUrl(''); void save(''); }}>Unlink</Button>
+          )}
+        </div>
+        {test && <div style={{ fontSize: 12, color: /^Linked/.test(test) ? T.green : test === 'Checking…' ? T.textMuted : T.danger, lineHeight: 1.5 }}>{test}</div>}
       </Card>
     </Section>
   );

@@ -87,6 +87,21 @@ describe('taxPicture', () => {
     expect(before.upcoming.some((p) => p.due === '2027-01-31')).toBe(true);
   });
 
+  it('fills the pot with a fixed share of business money in when you choose one', () => {
+    const rows = [
+      txn({ bucket: 'business_income', streamId: 'cstl', amountPence: 100_000, date: '2026-06-01' }),
+      txn({ bucket: 'business_income', streamId: 'cstl', amountPence: 10_000, direction: 'out', date: '2026-06-02' }), // refund to a client
+      txn({ bucket: 'business_income', streamId: 'refunds', amountPence: 50_000, date: '2026-06-03' }), // not self-employment
+      txn({ bucket: 'business_expense', streamId: 'cstl', category: 'adminCosts', amountPence: 20_000, direction: 'out', date: '2026-06-04' }),
+    ];
+    const fixed = taxPicture(rows, streams, { ...DEFAULT_SETTINGS, setAsidePercent: 20 }, '2026-09-24');
+    expect(fixed.setAside).toMatchObject({ fixed: true, percent: 20 });
+    expect(fixed.potTargetPence).toBe(18_000); // 20% of £900 in
+    const auto = taxPicture(rows, streams, { ...DEFAULT_SETTINGS, setAsidePercent: null }, '2026-09-24');
+    expect(auto.setAside.fixed).toBe(false);
+    expect(auto.potTargetPence).toBe(auto.setAside.estimatePence);
+  });
+
   it('uses HMRC’s real figure for last year when entered', () => {
     const settings = { ...DEFAULT_SETTINGS, taxYears: { '2026': { ...DEFAULT_SETTINGS.taxYears['2026'], employmentIncomePence: 0, payeTaxPence: 0, priorYearLiabilityPence: 123_400, paidToHmrcPence: 0, expectedProfitPence: null } } };
     const p = taxPicture([], streams, settings, '2026-09-24');

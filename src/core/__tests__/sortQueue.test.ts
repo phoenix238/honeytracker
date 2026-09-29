@@ -76,9 +76,16 @@ describe('what a swipe would do', () => {
     expect(p.left.bucket).toBe('personal');
     expect(predict(txn({ direction: 'in' }), ctx()).right.bucket).toBe('business_income');
   });
-  it('left is a transfer for your own accounts and Spaces', () => {
-    expect(predict(txn({ counterparty: 'Phoenix Tanner', reference: 'Selfpay' }), ctx()).left.bucket).toBe('transfer');
-    expect(predict(txn({ meta: { starlingSource: 'INTERNAL_TRANSFER' } }), ctx()).left.bucket).toBe('transfer');
+  it('left is always personal — money between your own accounts included', () => {
+    expect(predict(txn({ counterparty: 'Phoenix Tanner', reference: 'Selfpay' }), ctx()).left.bucket).toBe('personal');
+  });
+  it('finds an emailed or snapped receipt for a cost, and takes its category from it', () => {
+    const t = txn({ direction: 'out', amountPence: 1200, date: '2026-09-10', counterparty: 'FACEBK *ADS' });
+    const r = (over: object) => ({ id: 'r', uploadedAt: '', filename: 'email.txt', mime: 'text/plain', merchant: 'Meta', date: '2026-09-08', totalPence: 1200, vatPence: null, suggestedCategory: 'advertisingCosts' as const, description: '', transactionId: null, ...over });
+    const p = predict(t, ctx({ receipts: [r({ id: 'far', date: '2026-08-01' }), r({ id: 'wrong', totalPence: 999 }), r({ id: 'taken', transactionId: 'x' }), r({ id: 'ok' })] }));
+    expect(p.receipt?.id).toBe('ok');
+    expect(p.right.category).toBe('advertisingCosts');
+    expect(predict({ ...t, direction: 'in' }, ctx({ receipts: [r({})] })).receipt).toBeNull();
   });
   it('guesses the stream and category from what you did last time for the same payee', () => {
     const before = txn({ counterparty: 'WHR Consulting Ltd', direction: 'out', bucket: 'business_expense', streamId: 'practice', category: 'premisesRunningCosts', classifiedBy: 'user' });

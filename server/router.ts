@@ -12,6 +12,7 @@ import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { buildWorkbook } from './workbook.js';
+import { eventsBetween, fetchCalendar } from './calendar.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
 import { planBatchUndo } from './batchUndo.js';
 import { applyRules, linkInvoicePayment } from './sync.js';
@@ -106,6 +107,20 @@ function ruleFrom(b: Record<string, unknown>): Omit<Rule, 'id' | 'createdAt'> {
     category: cls.category ?? null,
     businessPercent: cls.businessPercent ?? 100,
   };
+}
+
+function setAside(v: unknown): number | null {
+  if (v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 60) throw new HttpError(400, 'Put aside between 0% and 60%');
+  return Math.round(n * 10) / 10;
+}
+
+function calendarLink(v: unknown): string {
+  const s = str(v, 1000).trim();
+  if (!s) return '';
+  if (!/^(https|webcals?):\/\//i.test(s)) throw new HttpError(400, 'Paste the calendar’s private iCal link — it starts with https:// or webcal://');
+  return s;
 }
 
 async function dropCstlOther(r: Repo, bookingId: string): Promise<void> {
@@ -242,7 +257,7 @@ const routes: [string, RegExp, Handler][] = [
     const items = Array.isArray(b.items) ? (b.items as Record<string, unknown>[]).slice(0, 1000) : [];
     if (!items.length) throw new HttpError(400, 'Nothing to save');
     const byId = new Map((await r.listTransactions()).map((t) => [t.id, t]));
-    const plan: { current: Transaction; patch: ReturnType<typeof classification> }[] = [];
+    const plan: { current: Transaction; patch: ReturnType<typeof classification>; receiptIds: string[] }[] = [];
     const skipped: { id: string; reason: 'not found' | 'changed since' | 'yours' }[] = [];
     for (const it of items) {
       const id = str(it?.id, 64);
@@ -250,13 +265,24 @@ const routes: [string, RegExp, Handler][] = [
       if (!current) { skipped.push({ id, reason: 'not found' }); continue; }
       if (it.expectUpdatedAt !== undefined && str(it.expectUpdatedAt, 40) !== current.updatedAt) { skipped.push({ id, reason: 'changed since' }); continue; }
       if (it.unlessYours === true && current.classifiedBy === 'user' && current.bucket !== 'unreviewed') { skipped.push({ id, reason: 'yours' }); continue; }
-      plan.push({ current, patch: classification((it.patch ?? {}) as Record<string, unknown>, current) });
+      const receiptIds = Array.isArray(it.attachReceiptIds) ? it.attachReceiptIds.map((x) => str(x, 64)).filter(Boolean).slice(0, 5) : [];
+      plan.push({ current, patch: classification((it.patch ?? {}) as Record<string, unknown>, current), receiptIds });
     }
     const rule = b.rule ? ruleFrom(b.rule) : null;
     const updated: Transaction[] = [];
-    for (const { current, patch } of plan) {
+    let receiptsAttached = 0;
+    for (const { current, patch, receiptIds } of plan) {
       const t = await r.updateTransaction(current.id, { ...patch, ...decidedBy(patch.bucket ?? current.bucket) }, { batchId, existing: current });
-      if (t) updated.push(t);
+      if (!t) continue;
+      // Receipts found for the line (emailed or snapped) — only ones not already evidence for something.
+      for (const rid of receiptIds) {
+        const rc = await r.getReceipt(rid);
+        if (!rc || rc.transactionId) continue;
+        await r.updateReceipt(rid, { transactionId: t.id }, { batchId });
+        t.receiptIds = [...t.receiptIds, rid];
+        receiptsAttached++;
+      }
+      updated.push(t);
     }
     // "Do the same for new ones": only rows still to come — the ones here were just decided.
     // A newer decision about the same payee replaces the old rule rather than fighting it.
@@ -266,13 +292,18 @@ const routes: [string, RegExp, Handler][] = [
     for (const old of replaced) await r.deleteRule(old.id);
     const saved = rule ? await r.insertRule(rule) : null;
     if (saved) await r.setKv(`batch:${batchId}:rule`, { ruleId: saved.id, replaced });
-    return json({ batchId, updated, skipped, ruleId: saved?.id ?? null, rule: saved });
+    return json({ batchId, updated, skipped, ruleId: saved?.id ?? null, rule: saved, receiptsAttached });
   }],
   ['POST', /^\/api\/batches\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
     if (await r.getKv(`batch:${id}:undone`)) throw new HttpError(409, 'That was already undone.');
-    const [updates, made] = await Promise.all([r.batchUpdates(id!), r.getKv<{ ruleId: string; replaced?: Rule[] }>(`batch:${id}:rule`)]);
+    const [updates, made, links] = await Promise.all([r.batchUpdates(id!), r.getKv<{ ruleId: string; replaced?: Rule[] }>(`batch:${id}:rule`), r.batchReceiptLinks(id!)]);
     const ruleId = made?.ruleId ?? null;
-    if (!updates.length && !ruleId) throw new HttpError(404, 'Nothing to undo');
+    if (!updates.length && !ruleId && !links.length) throw new HttpError(404, 'Nothing to undo');
+    // Receipts the batch attached go back to being unattached — if they're still where it put them.
+    for (const l of links) {
+      const rc = await r.getReceipt(l.receiptId);
+      if (rc?.transactionId === l.transactionId) await r.updateReceipt(l.receiptId, { transactionId: null }, { batchId: `undo:${id}` });
+    }
     const { undo, kept } = planBatchUndo(await r.listTransactions(), updates);
     for (const u of undo) await r.updateTransaction(u.id, u.patch, { batchId: `undo:${id}` });
     if (ruleId) await r.deleteRule(ruleId);
@@ -405,6 +436,8 @@ const routes: [string, RegExp, Handler][] = [
       receiptThresholdPence: b.receiptThresholdPence !== undefined ? pence(b.receiptThresholdPence) : current.receiptThresholdPence,
       cstlStreamId: b.cstlStreamId !== undefined ? (b.cstlStreamId ? str(b.cstlStreamId, 64) : null) : current.cstlStreamId,
       taxYears,
+      setAsidePercent: b.setAsidePercent !== undefined ? setAside(b.setAsidePercent) : current.setAsidePercent,
+      calendarUrl: b.calendarUrl !== undefined ? calendarLink(b.calendarUrl) : current.calendarUrl,
     };
     await r.saveSettings(next);
     return json(next);
@@ -748,6 +781,27 @@ const routes: [string, RegExp, Handler][] = [
       }
     }
     return json(out);
+  }],
+
+  // ── Calendar ──────────────────────────────────────────────────────────────────────
+  // Events between two dates from your calendar's private link, for turning into invoice lines.
+  ['GET', /^\/api\/calendar\/events$/, async (_req, r, _p, url) => {
+    const { calendarUrl } = await r.getSettings();
+    if (!calendarUrl) throw new HttpError(400, 'No calendar linked yet — paste its private iCal link in Settings → Calendar.');
+    const from = url.searchParams.get('from') ?? '';
+    const to = url.searchParams.get('to') ?? '';
+    if (!isDate(from) || !isDate(to) || from > to) throw new HttpError(400, 'Pick a date range');
+    let ics: string;
+    try {
+      ics = await fetchCalendar(calendarUrl);
+    } catch (e) {
+      throw new HttpError(502, (e as Error).message);
+    }
+    try {
+      return json({ events: eventsBetween(ics, from, to).slice(0, 500) });
+    } catch (e) {
+      throw new HttpError(502, `The calendar couldn’t be read: ${(e as Error).message}`);
+    }
   }],
 
   // ── Statements from other banks (Monzo, …) ───────────────────────────────────────

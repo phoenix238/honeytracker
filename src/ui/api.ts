@@ -61,6 +61,17 @@ export interface AppState {
   today: string;
 }
 
+/** One event from your calendar, in UK time. */
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  start: string | null;
+  end: string | null;
+  hours: number | null;
+  location: string;
+}
+
 export type Classification = Partial<Pick<Transaction, 'bucket' | 'streamId' | 'category' | 'businessPercent' | 'note'>>;
 
 /** One row of a batch: the decision, and the version of the row it was made against. */
@@ -70,6 +81,8 @@ export interface BatchItem {
   expectUpdatedAt?: string;
   /** Leave the row alone if you'd already sorted it yourself (used for "similar" rows). */
   unlessYours?: boolean;
+  /** Receipts (emailed or snapped) to attach to the row as its evidence. */
+  attachReceiptIds?: string[];
 }
 
 export interface BatchResult {
@@ -78,6 +91,7 @@ export interface BatchResult {
   skipped: { id: string; reason: 'not found' | 'changed since' | 'yours' }[];
   ruleId: string | null;
   rule: Rule | null;
+  receiptsAttached: number;
 }
 
 export const api = {
@@ -117,6 +131,8 @@ export const api = {
     call<{ invoice: Invoice; transaction: Transaction }>('POST', `/api/invoices/${id}/pay`, body),
   unpayInvoice: (id: string) => call<Invoice>('POST', `/api/invoices/${id}/unpay`, {}),
   invoiceCandidates: (id: string) => call<Transaction[]>('GET', `/api/invoices/${id}/candidates`),
+  calendarEvents: (from: string, to: string) =>
+    call<{ events: CalendarEvent[] }>('GET', `/api/calendar/events?from=${from}&to=${to}`),
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
 
   aiRestreamImports: () => call<{ marked: number }>('POST', '/api/ai/restream-imports', {}),

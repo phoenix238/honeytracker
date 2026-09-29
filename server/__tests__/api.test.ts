@@ -312,7 +312,7 @@ describe('invoices', () => {
     const stream = (await call('POST', '/api/streams', { name: 'Media' })).data;
     const a = (await call('POST', '/api/invoices', { clientName: 'Studio Ltd', streamId: stream.id, lines })).data;
     const b = (await call('POST', '/api/invoices', { clientName: 'Other', lines })).data;
-    expect([a.number, b.number]).toEqual(['INV-0042', 'INV-0043']);
+    expect([a.number, b.number]).toEqual(['INV42', 'INV43']); // no padding zeros
 
     // Can't send without a client.
     const empty = (await call('POST', '/api/invoices', {})).data;
@@ -325,7 +325,7 @@ describe('invoices', () => {
     expect(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString()).toBe('%PDF');
 
     // £250 + 2.5 × £40 = £350, paid with the reference.
-    feed.push(item('pay-1', 350, 'IN', daysAgo(0), { counterPartyName: 'STUDIO LTD', reference: 'inv0042' }));
+    feed.push(item('pay-1', 350, 'IN', daysAgo(0), { counterPartyName: 'STUDIO LTD', reference: 'inv 42' }));
     const sync = await call('POST', '/api/sync', {});
     expect(sync.data.invoicesPaid).toBe(1);
     const state = (await call('GET', '/api/state')).data;
@@ -337,7 +337,7 @@ describe('invoices', () => {
     // A paid invoice is locked, and prints as a receipt.
     expect((await call('PATCH', `/api/invoices/${a.id}`, { notes: 'x' })).status).toBe(400);
     const receipt = await handle(new Request(`${BASE}/api/invoices/${a.id}/pdf`, { headers: { cookie } }));
-    expect(receipt.headers.get('content-disposition')).toContain('receipt-INV-0042');
+    expect(receipt.headers.get('content-disposition')).toContain('receipt-INV42');
   });
 
   it('records cash, links a chosen bank payment, and can be unpaid again', async () => {
@@ -901,5 +901,41 @@ describe('workbook to check before the accountant', () => {
     const plan = planEditImport(parseCsv(csv), fresh.transactions, fresh.streams);
     expect(plan).toMatchObject({ problems: [], conflicts: [], changes: [] });
     expect(plan.unchanged).toBe(tx.rowCount - 1);
+  });
+});
+
+describe('receipts found while sorting', () => {
+  it('attaches a found receipt with the swipe, and undo takes it off again', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    feed.push(item('fb1', 12, 'OUT', daysAgo(3), { counterPartyName: 'FACEBK *ADS', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    const t = (await call('GET', '/api/state')).data.transactions[0] as Transaction;
+    // A receipt the app has but couldn't match automatically (no date read off it).
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
+    const up = (await call('POST', '/api/receipts', { filename: 'meta.png', mime: 'image/png', dataBase64: png })).data;
+    expect(up.matchedTransactionId).toBeNull();
+    const res = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-rc-1',
+      items: [{ id: t.id, patch: { bucket: 'business_expense', streamId: stream.id, category: 'advertisingCosts' }, attachReceiptIds: [up.receipt.id, 'nope'] }],
+    });
+    expect(res.data.receiptsAttached).toBe(1);
+    expect(res.data.updated[0].receiptIds).toEqual([up.receipt.id]);
+    let receipts = (await call('GET', '/api/state')).data.receipts;
+    expect(receipts[0].transactionId).toBe(t.id);
+    await call('POST', '/api/batches/batch-rc-1/undo', {});
+    receipts = (await call('GET', '/api/state')).data.receipts;
+    expect(receipts[0].transactionId).toBeNull();
+  });
+});
+
+describe('calendar link', () => {
+  it('is saved from settings, refused if it isn’t a link, and reports a missing one clearly', async () => {
+    await signIn();
+    expect((await call('GET', '/api/calendar/events?from=2026-09-01&to=2026-09-30')).status).toBe(400);
+    expect((await call('PUT', '/api/settings', { calendarUrl: 'my calendar' })).status).toBe(400);
+    const ok = await call('PUT', '/api/settings', { calendarUrl: 'webcal://calendar.test/private.ics', setAsidePercent: 20 });
+    expect(ok.data).toMatchObject({ calendarUrl: 'webcal://calendar.test/private.ics', setAsidePercent: 20 });
+    expect((await call('PUT', '/api/settings', { setAsidePercent: 80 })).status).toBe(400);
   });
 });

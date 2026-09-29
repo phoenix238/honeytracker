@@ -1,4 +1,5 @@
 import type { Bucket, ExpenseCategory, Receipt, Rule, Settings, Stream, Transaction } from './types.js';
+import { receiptsFor } from './receiptMatch.js';
 
 // The sort deck: one card at a time, swipe right for business, left for not. This file decides
 // which rows are waiting, in what order, what each swipe would make of a row, and which other
@@ -80,12 +81,12 @@ export interface Decision {
 export interface Prediction {
   /** Swipe right: business income if money came in, a business cost if it went out. */
   right: Decision;
-  /** Swipe left: not business — a transfer between your own accounts, or personal. */
+  /** Swipe left: not business — personal. (Moves between Starling Spaces never reach the deck.) */
   left: Decision;
-  /** Why the left swipe is a transfer, when it is. */
-  transferReason: string | null;
   /** Looks like pay from a job (payroll), which isn't self-employed income at all. */
   looksLikeWages: boolean;
+  /** An unattached receipt (emailed or snapped) that matches this line, to attach with the swipe. */
+  receipt: Receipt | null;
 }
 
 export interface PredictContext {
@@ -98,12 +99,6 @@ export interface PredictContext {
 }
 
 const WAGES = /\b(wages?|salary|salaries|payroll|net ?pay|pay ?slip|pay ?roll)\b/i;
-
-/** Your own name, as the bank tends to write it — money from or to it is a move between your accounts. */
-function ownNames(settings: PredictContext['settings']): string[] {
-  const names = [settings.profile?.name, settings.name].map((n) => (n ?? '').trim().toLowerCase()).filter((n) => n.length >= 4);
-  return [...new Set(names)];
-}
 
 export function predict(t: Transaction, ctx: PredictContext): Prediction {
   const active = ctx.streams.filter((s) => !s.archived);
@@ -123,23 +118,21 @@ export function predict(t: Transaction, ctx: PredictContext): Prediction {
     (t.meta.cstlBookingId && ctx.settings.cstlStreamId && activeIds.has(ctx.settings.cstlStreamId) ? ctx.settings.cstlStreamId : null) ??
     (ctx.lastStreamId && activeIds.has(ctx.lastStreamId) ? ctx.lastStreamId : null);
 
-  const receipt = ctx.receipts.find((r) => r.transactionId === t.id && r.suggestedCategory);
+  const attached = ctx.receipts.find((r) => r.transactionId === t.id && r.suggestedCategory);
+  const found = t.receiptIds.length ? null : receiptsFor(t, ctx.receipts)[0] ?? null;
   const category: ExpenseCategory | null =
     t.direction === 'out'
-      ? (t.bucket === 'business_expense' ? t.category : null) ?? receipt?.suggestedCategory ?? (past?.bucket === 'business_expense' ? past.category : null) ?? null
+      ? (t.bucket === 'business_expense' ? t.category : null) ??
+        attached?.suggestedCategory ??
+        found?.suggestedCategory ??
+        (past?.bucket === 'business_expense' ? past.category : null) ??
+        null
       : null;
-
-  const who = `${t.counterparty} ${t.reference}`.toLowerCase();
-  const ownName = ownNames(ctx.settings).find((n) => who.includes(n));
-  const transferReason =
-    t.meta.starlingSource === 'INTERNAL_TRANSFER' ? 'a move between your Starling Spaces'
-    : ownName ? 'money to or from your own name'
-    : null;
 
   return {
     right: { bucket: t.direction === 'in' ? 'business_income' : 'business_expense', streamId: stream, category },
-    left: { bucket: transferReason ? 'transfer' : 'personal', streamId: null, category: null },
-    transferReason,
+    left: { bucket: 'personal', streamId: null, category: null },
     looksLikeWages: t.direction === 'in' && WAGES.test(`${t.counterparty} ${t.reference}`),
+    receipt: found,
   };
 }

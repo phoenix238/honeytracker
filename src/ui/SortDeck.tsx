@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ExpenseCategory, Transaction } from '../core/types';
+import type { ExpenseCategory, Receipt, Transaction } from '../core/types';
+import { receiptsFor } from '../core/receiptMatch';
 import { QUICK_CATEGORIES, categoryInfo } from '../core/hmrc';
 import { findSimilar, needsDecision, orderQueue, predict, rulePattern, type Decision } from '../core/sortQueue';
 import { mkId } from '../core/id';
@@ -15,6 +16,7 @@ import type { App } from './useApp';
 
 const DAILY_GOAL = 25;
 const TOAST_MS = 6000;
+const FLY_MS = 260;
 
 type Step = 'card' | 'category' | 'stream';
 interface Done {
@@ -56,6 +58,10 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
   const [toast, setToast] = useState<Done | null>(null);
   const [error, setError] = useState('');
   const [moreId, setMoreId] = useState<string | null>(null);
+  /** The card on its way off the screen, and which way. */
+  const [leaving, setLeaving] = useState<'left' | 'right' | null>(null);
+  /** Attach the receipt Honey found for this card (on by default; untick if it's the wrong one). */
+  const [attach, setAttach] = useState(true);
   const [day, setDay] = useState(() => {
     const saved = readStore<{ date: string; done: number }>('ht:sortDay', { date: '', done: 0 });
     return saved.date === data.today ? saved : { date: data.today, done: 0 };
@@ -84,6 +90,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     setStep('card');
     setShowSimilar(false);
     setUnticked(new Set());
+    setAttach(true);
   }, [card?.id]);
 
   const guess = card
@@ -111,9 +118,32 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
       return next;
     });
 
-  const commit = (t: Transaction, decision: Decision, others: Transaction[]) => {
+  /**
+   * Which receipt goes with which row on a business cost: the one shown on the card (if left
+   * ticked), and for each similar row the one receipt that fits it — never the same one twice,
+   * and nothing when a row has more than one that could be it.
+   */
+  const receiptsForRows = (rows: Transaction[], shown: Receipt | null): Map<string, string> => {
+    const out = new Map<string, string>();
+    const used = new Set<string>();
+    if (shown && attach) {
+      out.set(rows[0]!.id, shown.id);
+      used.add(shown.id);
+    }
+    for (const r of rows.slice(1)) {
+      if (r.receiptIds.length) continue;
+      const fits = receiptsFor(r, data.receipts).filter((x) => !used.has(x.id));
+      if (fits.length !== 1) continue;
+      out.set(r.id, fits[0]!.id);
+      used.add(fits[0]!.id);
+    }
+    return out;
+  };
+
+  const commit = (t: Transaction, decision: Decision, others: Transaction[], shownReceipt: Receipt | null) => {
     const batchId = mkId();
     const rows = [t, ...others];
+    const receiptOf = decision.bucket === 'business_expense' ? receiptsForRows(rows, shownReceipt) : new Map<string, string>();
     const patch = {
       bucket: decision.bucket,
       streamId: decision.bucket === 'business_income' || decision.bucket === 'business_expense' ? decision.streamId : null,
@@ -138,12 +168,19 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
       try {
         const res = await app.saveBatch({
           batchId,
-          items: rows.map((r) => ({ id: r.id, patch, expectUpdatedAt: r.updatedAt, unlessYours: r.id !== t.id })),
+          items: rows.map((r) => ({
+            id: r.id,
+            patch,
+            expectUpdatedAt: r.updatedAt,
+            unlessYours: r.id !== t.id,
+            ...(receiptOf.has(r.id) ? { attachReceiptIds: [receiptOf.get(r.id)!] } : {}),
+          })),
           rule,
         });
         const n = res.updated.length;
         const text =
           `${n === 1 ? (t.counterparty || t.reference || 'Row') : `${n} rows`} → ${label}` +
+          (res.receiptsAttached ? ` · ${res.receiptsAttached} receipt${res.receiptsAttached === 1 ? '' : 's'} attached` : '') +
           (res.rule ? ` · new “${res.rule.pattern}” ones will sort themselves` : '') +
           (res.skipped.length ? ` · ${res.skipped.length} left as they were (changed meanwhile)` : '');
         const entry = { batchId, count: n, text };
@@ -165,13 +202,26 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
 
   const goalHit = day.done >= DAILY_GOAL && !goalSeen && queue.length > 0;
 
+  /** Send the card off the screen, then save — so every decision has the same feel, swipe or tap. */
+  const fly = (dir: 'left' | 'right', run: () => void) => {
+    if (reducedMotion()) return run();
+    setLeaving(dir);
+    window.setTimeout(() => {
+      setLeaving(null);
+      run();
+    }, FLY_MS);
+  };
+
   const decide = (dir: 'left' | 'right') => {
-    if (!card || !guess) return;
-    if (dir === 'left') return commit(card, guess.left, alsoSorting);
+    if (!card || !guess || leaving) return;
+    const t = card;
+    const others = alsoSorting;
+    const shown = guess.receipt;
+    if (dir === 'left') return fly('left', () => commit(t, guess.left, others, null));
     const decision: Decision = { ...guess.right, streamId, category };
     if (card.direction === 'out' && !decision.category) return setStep('category');
     if (streams.length > 1 && !decision.streamId) return setStep('stream');
-    commit(card, decision, alsoSorting);
+    fly('right', () => commit(t, decision, others, shown));
   };
 
   const skip = () => {
@@ -200,6 +250,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     const onKey = (e: KeyboardEvent) => {
       if (moreId || (e.target as HTMLElement)?.tagName === 'INPUT') return;
       if (goalHit && e.key !== 'Escape') return; // the "that's enough for today" screen is showing
+      if (leaving) return;
       if (e.key === 'ArrowRight') decide('right');
       else if (e.key === 'ArrowLeft') decide('left');
       else if (e.key === 'ArrowDown') skip();
@@ -217,15 +268,21 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     onClose();
   };
 
-  const swipe = useSwipe(decide, Boolean(card) && step === 'card' && !moreId);
-  const tilt = swipe.dx / 18;
-  const lean = swipe.dx > 30 ? 'right' : swipe.dx < -30 ? 'left' : null;
+  const swipe = useSwipe(decide, Boolean(card) && step === 'card' && !moreId && !leaving);
+  const width = typeof window === 'undefined' ? 390 : Math.min(window.innerWidth, 520);
+  // How far towards a decision the drag is, 0–1: drives the tint, the stamp and the card behind.
+  const pull = leaving ? 1 : Math.min(1, Math.abs(swipe.dx) / (width * 0.35));
+  const lean = leaving ?? (swipe.dx > 24 ? 'right' : swipe.dx < -24 ? 'left' : null);
+  const cardTransform = leaving
+    ? `translateX(${(leaving === 'right' ? 1 : -1) * (width + 160)}px) rotate(${leaving === 'right' ? 18 : -18}deg)`
+    : `translateX(${swipe.dx}px) rotate(${reducedMotion() ? 0 : swipe.dx / 20}deg)`;
+  const next = queue[1] ?? null;
   const rightLabel = guess
     ? guess.right.bucket === 'business_income'
       ? `Business income${streamId ? ` · ${streams.find((s) => s.id === streamId)?.name ?? ''}` : ''}`
       : `Business cost${category ? ` · ${QUICK_CATEGORIES.find((c) => c.key === category)?.label ?? categoryInfo(category).label}` : ''}`
     : '';
-  const leftLabel = guess ? (guess.left.bucket === 'transfer' ? 'Transfer (my own money)' : 'Personal') : '';
+  const leftLabel = 'Personal';
 
   return (
     <div
@@ -282,13 +339,36 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
           </div>
         ) : (
           <>
+            {/* The deck: the next card waits behind, growing into place as this one is pulled away. */}
+            <div style={{ position: 'relative' }}>
+              {next && (
+                <div
+                  aria-hidden
+                  style={{
+                    position: 'absolute', inset: 0, background: T.surface, border: `2px solid ${T.border}`, borderRadius: 18, padding: 16,
+                    transform: `translateY(${12 - 12 * pull}px) scale(${0.94 + 0.06 * pull})`, opacity: 0.45 + 0.55 * pull,
+                    transition: swipe.dragging ? 'none' : `transform ${FLY_MS}ms ease-out, opacity ${FLY_MS}ms ease-out`,
+                    overflow: 'hidden', pointerEvents: 'none',
+                  }}
+                >
+                  <div style={{ fontFamily: fonts.display, fontSize: 20, fontWeight: 800, marginTop: 22 }}>{next.counterparty || next.reference || '—'}</div>
+                  <div style={{ marginTop: 8 }}><Money pence={next.amountPence} signed={next.direction} color={next.direction === 'in' ? T.green : T.text} size={28} /></div>
+                </div>
+              )}
             <div
+              key={card.id}
               {...swipe.handlers}
               style={{
                 touchAction: 'pan-y',
                 userSelect: 'none',
-                transform: `translateX(${swipe.dx}px) rotate(${reducedMotion() ? 0 : tilt}deg)`,
-                transition: swipe.dragging || reducedMotion() ? 'none' : 'transform 0.2s ease-out',
+                transform: cardTransform,
+                opacity: leaving ? 0 : 1,
+                // Following the finger exactly; flying off quickly; springing back with a little bounce.
+                transition: swipe.dragging || reducedMotion()
+                  ? 'none'
+                  : leaving
+                    ? `transform ${FLY_MS}ms cubic-bezier(.5,0,.9,.4), opacity ${FLY_MS}ms ease-in`
+                    : 'transform 0.38s cubic-bezier(.2,.9,.3,1.25)',
                 background: T.surface,
                 border: `2px solid ${lean === 'right' ? T.green : lean === 'left' ? T.textMuted : T.border}`,
                 borderRadius: 18,
@@ -297,15 +377,28 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                 flexDirection: 'column',
                 gap: 10,
                 position: 'relative',
+                zIndex: 1,
+                boxShadow: swipe.dragging ? '0 18px 40px rgba(0,0,0,0.45)' : '0 6px 18px rgba(0,0,0,0.25)',
+                willChange: 'transform',
               }}
             >
+              {/* A wash of colour that deepens as the swipe gets closer to counting. */}
+              <div
+                aria-hidden
+                style={{
+                  position: 'absolute', inset: 0, borderRadius: 16, pointerEvents: 'none',
+                  background: lean === 'right' ? `linear-gradient(90deg, transparent, ${T.green}55)` : lean === 'left' ? `linear-gradient(270deg, transparent, ${T.textMuted}55)` : 'transparent',
+                  opacity: pull,
+                }}
+              />
               {lean && (
                 <div
                   aria-hidden
                   style={{
                     position: 'absolute', top: 14, [lean === 'right' ? 'left' : 'right']: 14,
                     border: `2px solid ${lean === 'right' ? T.green : T.textMuted}`, color: lean === 'right' ? T.green : T.textMuted,
-                    borderRadius: 8, padding: '3px 8px', fontWeight: 800, fontSize: 13, transform: `rotate(${lean === 'right' ? -8 : 8}deg)`,
+                    borderRadius: 8, padding: '3px 8px', fontWeight: 800, fontSize: 13,
+                    transform: `rotate(${lean === 'right' ? -8 : 8}deg) scale(${0.8 + 0.3 * pull})`, opacity: Math.max(0.35, pull),
                   }}
                 >
                   {lean === 'right' ? 'BUSINESS' : leftLabel.toUpperCase()}
@@ -324,6 +417,16 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
               <Money pence={card.amountPence} signed={card.direction} color={card.direction === 'in' ? T.green : T.text} size={28} />
 
               {card.receiptIds.length > 0 && <Hint>🧾 Receipt attached</Hint>}
+              {guess?.receipt && (
+                <label onPointerDown={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: T.green, lineHeight: 1.5 }}>
+                  <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} style={{ marginTop: 2 }} />
+                  <span>
+                    🧾 Found its receipt: {guess.receipt.merchant || guess.receipt.filename}
+                    {guess.receipt.date ? ` · ${fmtDate(guess.receipt.date)}` : ''} · {/^(message|email)|\.eml$|text\/plain/i.test(`${guess.receipt.filename} ${guess.receipt.mime}`) ? 'from your email' : 'you snapped it'}.{' '}
+                    Attaches when you swipe it as business.
+                  </span>
+                </label>
+              )}
               {card.note && <Hint>✏️ {card.note}</Hint>}
               {card.classifiedBy === 'ai' && (
                 <Hint color={T.accentBright}>
@@ -372,9 +475,12 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                   {QUICK_CATEGORIES.map((c) => (
                     <Pill key={c.key} active={false} color={T.expense} onClick={() => {
                       setPick({ ...mine, id: card.id, category: c.key });
-                      const next = { ...guess!.right, streamId, category: c.key };
-                      if (streams.length > 1 && !next.streamId) setStep('stream');
-                      else commit(card, next, alsoSorting);
+                      const decision = { ...guess!.right, streamId, category: c.key };
+                      const t = card;
+                      const others = alsoSorting;
+                      const shown = guess!.receipt;
+                      if (streams.length > 1 && !decision.streamId) setStep('stream');
+                      else fly('right', () => commit(t, decision, others, shown));
                     }}>
                       {c.icon} {c.label}
                     </Pill>
@@ -387,7 +493,10 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                   {streams.map((s) => (
                     <Pill key={s.id} active={false} color={s.color} onClick={() => {
                       setPick({ ...mine, id: card.id, streamId: s.id });
-                      commit(card, { ...guess!.right, streamId: s.id, category }, alsoSorting);
+                      const t = card;
+                      const others = alsoSorting;
+                      const shown = guess!.receipt;
+                      fly('right', () => commit(t, { ...guess!.right, streamId: s.id, category }, others, shown));
                     }}>
                       {s.name}
                     </Pill>
@@ -427,14 +536,14 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                 </div>
               )}
             </div>
+            </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <button type="button" onClick={() => setMoreId(card.id)} style={linkBtn}>More options (refund, part-business, note)…</button>
+              <button type="button" onClick={() => setMoreId(card.id)} style={linkBtn}>More options…</button>
               {done.length > 0 && (
                 <button type="button" onClick={() => void undo()} disabled={app.busy} style={linkBtn}>↶ Undo last</button>
               )}
             </div>
-            {guess?.transferReason && <div style={{ fontSize: 11, color: T.textFaint }}>Left makes it a transfer: {guess.transferReason}.</div>}
             {/* The buttons stay in reach however tall the card is. */}
             <div style={{ position: 'sticky', bottom: 0, background: T.bg, padding: '8px 0 calc(8px + env(safe-area-inset-bottom, 0px))', display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, marginTop: 'auto' }}>
               <Button onClick={() => decide('left')} style={{ flexDirection: 'column', gap: 2, borderColor: BUCKET_COLOR[guess?.left.bucket ?? 'personal'] }}>

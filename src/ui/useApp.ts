@@ -216,8 +216,8 @@ export function useApp(): App {
     saveBatch: async (b) => {
       try {
         const res = await api.saveBatch(b);
-        // A row changed elsewhere meanwhile was left alone; fetch it fresh so it isn't offered stale.
-        if (res.skipped.some((x) => x.reason !== 'yours')) {
+        // A row changed elsewhere meanwhile was left alone, or receipts moved: fetch it all fresh.
+        if (res.skipped.some((x) => x.reason !== 'yours') || res.receiptsAttached) {
           await reload();
           return res;
         }

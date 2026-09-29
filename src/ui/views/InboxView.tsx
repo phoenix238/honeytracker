@@ -12,7 +12,7 @@ import type { App } from '../useApp';
 // Every movement of money. Sorting happens in the swipe deck; this is where you look things up,
 // see the totals, and find what you swiped away ("Not business") to put it back.
 
-type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
+type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'in' | 'out' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
 
 const fromOldApp = (t: Transaction) => t.source === 'import' || Boolean(t.meta.importedFrom);
 const isBusiness = (t: Transaction) => t.bucket === 'business_income' || t.bucket === 'business_expense';
@@ -38,6 +38,8 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
       if (filter === 'income' && t.bucket !== 'business_income') return false;
       if (filter === 'costs' && t.bucket !== 'business_expense') return false;
       if (filter === 'notbusiness' && t.bucket !== 'personal' && t.bucket !== 'transfer') return false;
+      if (filter === 'in' && t.direction !== 'in') return false;
+      if (filter === 'out' && t.direction !== 'out') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
       if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
       if (filter === 'old' && !fromOldApp(t)) return false;
@@ -64,6 +66,8 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
     filter === 'income' ? { label: 'Business income', pence: rows.reduce((a, t) => a + (t.direction === 'in' ? t.amountPence : -t.amountPence), 0) }
     : filter === 'costs' ? { label: 'Business costs', pence: rows.reduce((a, t) => a + (t.direction === 'out' ? t.amountPence : -t.amountPence), 0) }
     : filter === 'notbusiness' ? { label: 'Not counted', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
+    : filter === 'in' ? { label: 'All money in', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
+    : filter === 'out' ? { label: 'All money out', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
     : null;
   // What the AI will look at: unsorted lines, plus business lines still missing a stream.
   const aiQueue = data.transactions.filter(
@@ -192,6 +196,8 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
         <Chip active={filter === 'income'} color={T.green} onClick={() => setFilter('income')}>Income</Chip>
         <Chip active={filter === 'costs'} color={T.expense} onClick={() => setFilter('costs')}>Costs</Chip>
         <Chip active={filter === 'notbusiness'} color={T.textMuted} onClick={() => setFilter('notbusiness')}>Not business</Chip>
+        <Chip active={filter === 'in'} color={T.green} onClick={() => setFilter('in')}>Money in</Chip>
+        <Chip active={filter === 'out'} onClick={() => setFilter('out')}>Money out</Chip>
         {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
         {data.transactions.some(fromOldApp) && <Chip active={filter === 'old'} onClick={() => setFilter('old')}>Old app</Chip>}
         <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>

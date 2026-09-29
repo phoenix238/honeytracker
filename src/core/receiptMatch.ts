@@ -37,3 +37,19 @@ export function autoMatch(receipt: Receipt, txns: readonly Transaction[]): Trans
   const c = receiptCandidates(receipt, txns).filter((t) => t.receiptIds.length === 0);
   return c.length === 1 ? c[0]! : null;
 }
+
+const DAY = 86_400_000;
+
+/**
+ * Receipts not yet attached to anything that could explain this bank line — a Gmail receipt the
+ * Google finder brought in, or a photo you snapped — best first: same amount (±1p), nearest date.
+ * Online orders are often emailed a few days before or after the card is charged, so the window
+ * is a week each side.
+ */
+export function receiptsFor(t: Pick<Transaction, 'direction' | 'amountPence' | 'date'>, receipts: readonly Receipt[], windowDays = 7): Receipt[] {
+  if (t.direction !== 'out') return [];
+  const at = Date.parse(t.date);
+  return receipts
+    .filter((r) => !r.transactionId && r.totalPence != null && r.date && Math.abs(r.totalPence - t.amountPence) <= 1 && Math.abs(Date.parse(r.date) - at) <= windowDays * DAY)
+    .sort((a, b) => Math.abs(Date.parse(a.date!) - at) - Math.abs(Date.parse(b.date!) - at));
+}

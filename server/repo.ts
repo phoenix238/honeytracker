@@ -196,6 +196,18 @@ export function repo(db: Db) {
       ]);
     },
 
+    /** Receipts a batch attached, and to which row. */
+    async batchReceiptLinks(batchId: string): Promise<{ transactionId: string; receiptId: string }[]> {
+      const rows = await db.query<Row>(
+        "SELECT transaction_id, detail FROM audit_log WHERE batch_id = $1 AND action = 'receipt_attached' AND transaction_id IS NOT NULL ORDER BY id",
+        [batchId],
+      );
+      return rows.map((r) => ({
+        transactionId: s(r.transaction_id),
+        receiptId: s(((typeof r.detail === 'string' ? JSON.parse(r.detail) : r.detail) as { receiptId?: string })?.receiptId),
+      }));
+    },
+
     /** The changes one batch made, oldest first — what undoing that batch rewinds. */
     async batchUpdates(batchId: string): Promise<{ transactionId: string; detail: Record<string, { from?: unknown; to?: unknown }> }[]> {
       const rows = await db.query<Row>(
@@ -301,7 +313,7 @@ export function repo(db: Db) {
       );
       return rows[0] ? toReceipt(rows[0]) : null;
     },
-    async updateReceipt(id: string, patch: Partial<Omit<Receipt, 'id' | 'uploadedAt' | 'mime' | 'filename'>>): Promise<Receipt | null> {
+    async updateReceipt(id: string, patch: Partial<Omit<Receipt, 'id' | 'uploadedAt' | 'mime' | 'filename'>>, opts: { batchId?: string | null } = {}): Promise<Receipt | null> {
       const existing = await api.getReceipt(id);
       if (!existing) return null;
       const next = { ...existing, ...patch };
@@ -310,7 +322,7 @@ export function repo(db: Db) {
         [id, next.merchant, next.date, next.totalPence, next.vatPence, next.suggestedCategory, next.description, next.transactionId],
       );
       if (patch.transactionId !== undefined && patch.transactionId !== existing.transactionId) {
-        await api.audit(patch.transactionId ?? existing.transactionId, patch.transactionId ? 'receipt_attached' : 'receipt_detached', { receiptId: id });
+        await api.audit(patch.transactionId ?? existing.transactionId, patch.transactionId ? 'receipt_attached' : 'receipt_detached', { receiptId: id }, opts.batchId ?? null);
       }
       return api.getReceipt(id);
     },

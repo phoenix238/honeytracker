@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { T, fonts } from '../theme';
 import { Button, Card, Chip, Empty, Field, Label, Money, Section, Sheet, Title, fmtDate, inputStyle } from '../components';
 import { api, invoicePdfUrl } from '../api';
-import { daysOverdue, invoiceState, invoiceTotal, lineAmount, owedSummary, pastClients, type InvoiceState } from '../../core/invoices';
+import { daysOverdue, formatInvoiceNumber, invoiceState, invoiceTotal, lineAmount, owedSummary, pastClients, timedDescription, type InvoiceState } from '../../core/invoices';
+import { CalendarPicker, InvoicePreview, NextNumber, TimeFields } from './invoiceParts';
 import { addDays } from '../../core/dates';
 import { formatAmount, formatGBP, parsePence } from '../../core/money';
 import type { Invoice, InvoiceLine, Transaction } from '../../core/types';
@@ -36,6 +37,8 @@ export function InvoicesView({ app }: { app: App }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <Title right={<Button tone="primary" onClick={() => setOpenId('new')} style={{ padding: '9px 14px' }}>+ New invoice</Button>}>Invoices</Title>
+
+      <NextNumber app={app} />
 
       {profileMissing && (
         <div style={{ fontSize: 12, color: T.accentBright, lineHeight: 1.5 }}>
@@ -104,6 +107,10 @@ interface LineDraft {
   description: string;
   quantity: string;
   rate: string;
+  /** Time worked, when the line is entered as start and end rather than hours. */
+  timed?: { date: string; start: string; end: string };
+  /** The wording was written by Honey from the times, so it follows them until you change it. */
+  auto?: boolean;
 }
 
 const toDraft = (l: InvoiceLine): LineDraft => ({ description: l.description, quantity: String(l.quantity), rate: formatAmount(l.unitPence) });
@@ -129,6 +136,8 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
   const [paying, setPaying] = useState(false);
   const [candidates, setCandidates] = useState<Transaction[] | null>(null);
   const [paidDate, setPaidDate] = useState(data.today);
+  const [previewing, setPreviewing] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   const clients = useMemo(() => pastClients(data.invoices).slice(0, 8), [data.invoices]);
   const total = lines.reduce((sum, l) => sum + lineAmount(fromDraft(l)), 0);
@@ -183,6 +192,15 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
   };
 
   const setLine = (i: number, patch: Partial<LineDraft>) => setLines((ls) => ls.map((l, j) => (j === i ? { ...l, ...patch } : l)));
+  const lastRate = [...lines].reverse().find((l) => l.rate)?.rate ?? '';
+  const withoutBlank = (ls: LineDraft[]) => ls.filter((l) => l.description.trim() || l.rate || l.timed);
+  const preview = {
+    number: current?.number ?? formatInvoiceNumber(data.settings.profile.invoicePrefix, data.invoiceCounter),
+    numberPending: !current,
+    issueDate, dueDate, clientName, clientEmail, clientAddress, notes,
+    lines: lines.map(fromDraft).filter((l) => l.description || l.unitPence),
+    profile: data.settings.profile,
+  };
 
   return (
     <Sheet open onClose={onClose} title={current ? `${current.number} · ${STATE_LABEL[st]}` : 'New invoice'}>
@@ -234,7 +252,22 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
           <Section title="Work">
             {lines.map((l, i) => (
               <Card key={i} style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <input style={inputStyle} value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} placeholder="e.g. Shoot, 10:00–13:00" />
+                <input style={inputStyle} value={l.description} onChange={(e) => setLine(i, { description: e.target.value, auto: false })} placeholder="e.g. Session, or tap ⏱ for times" />
+                {l.timed && (
+                  <TimeFields
+                    date={l.timed.date}
+                    start={l.timed.start}
+                    end={l.timed.end}
+                    onChange={(v) =>
+                      setLine(i, {
+                        timed: { date: v.date, start: v.start, end: v.end },
+                        ...(v.hours ? { quantity: String(v.hours) } : {}),
+                        // Honey writes the wording from the times until you write your own.
+                        ...(l.auto || !l.description.trim() ? { description: timedDescription(v.date, v.start || null, v.end || null, ''), auto: true } : {}),
+                      })
+                    }
+                  />
+                )}
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, fontSize: 10, color: T.textMuted, marginBottom: -4 }}>
                   <span>Hours / qty</span><span>Rate £</span><span style={{ textAlign: 'right' }}>Amount</span>
                 </div>
@@ -243,15 +276,36 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
                   <input style={inputStyle} inputMode="decimal" value={l.rate} onChange={(e) => setLine(i, { rate: e.target.value })} aria-label="Rate in pounds" placeholder="Rate £" />
                   <span style={{ textAlign: 'right' }}><Money pence={lineAmount(fromDraft(l))} size={14} /></span>
                 </div>
-                {lines.length > 1 && (
-                  <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 12, textAlign: 'left', cursor: 'pointer', padding: 0 }}>
-                    Remove line
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <button
+                    type="button"
+                    onClick={() => setLine(i, l.timed ? { timed: undefined } : { timed: { date: issueDate, start: '', end: '' } })}
+                    style={{ background: 'none', border: 'none', color: l.timed ? T.textMuted : T.accent, fontSize: 12, textAlign: 'left', cursor: 'pointer', padding: 0 }}
+                  >
+                    {l.timed ? 'Enter hours instead' : '⏱ Start & end times'}
                   </button>
-                )}
+                  {lines.length > 1 && (
+                    <button type="button" onClick={() => setLines((ls) => ls.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 12, textAlign: 'left', cursor: 'pointer', padding: 0 }}>
+                      Remove line
+                    </button>
+                  )}
+                </div>
               </Card>
             ))}
-            <Button tone="quiet" onClick={() => setLines((ls) => [...ls, { description: '', quantity: '1', rate: ls[ls.length - 1]?.rate ?? '' }])}>+ Add a line</Button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <Button tone="quiet" onClick={() => setLines((ls) => [...ls, { description: '', quantity: '1', rate: ls[ls.length - 1]?.rate ?? '' }])}>+ Add a line</Button>
+              <Button tone="quiet" onClick={() => setPicking(true)}>📅 From calendar</Button>
+            </div>
           </Section>
+          <CalendarPicker
+            app={app}
+            open={picking}
+            onClose={() => setPicking(false)}
+            rateHint={lastRate}
+            onAdd={(picked) =>
+              setLines((ls) => [...withoutBlank(ls), ...picked.map((p) => ({ description: p.description, quantity: String(p.quantity), rate: lastRate }))])
+            }
+          />
 
           <Field label="Note on the invoice (optional)"><input style={inputStyle} value={notes} onChange={(e) => setNotes(e.target.value)} /></Field>
 
@@ -259,6 +313,9 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
             <Label>Total</Label>
             <Money pence={total} size={22} color={T.accentBright} />
           </div>
+
+          <Button onClick={() => setPreviewing(true)}>👁 Preview</Button>
+          <InvoicePreview open={previewing} onClose={() => setPreviewing(false)} {...preview} onPdf={current ? () => share(current.id, current.number, false) : undefined} />
 
           {st === 'draft' ? (
             <div style={{ display: 'flex', gap: 8 }}>

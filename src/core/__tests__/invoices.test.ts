@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue } from '../invoices';
+import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, timedDescription } from '../invoices';
 import type { Invoice } from '../types';
 import { txn } from './fixtures';
 
@@ -38,7 +38,8 @@ describe('invoice totals and state', () => {
     expect(invoiceState(inv({ status: 'void' }), '2026-09-20')).toBe('void');
   });
   it('numbers invoices', () => {
-    expect(formatInvoiceNumber('INV-', 42)).toBe('INV-0042');
+    expect(formatInvoiceNumber('INV', 42)).toBe('INV42');
+    expect(formatInvoiceNumber('INV-', 7)).toBe('INV-7');
   });
 });
 
@@ -48,6 +49,9 @@ describe('matching payments to invoices', () => {
     expect(mentionsInvoice({ reference: 'INV0042 thanks', counterparty: '' }, 'INV-0042')).toBe(true);
     expect(mentionsInvoice({ reference: 'INV-00421', counterparty: '' }, 'INV-0042')).toBe(false);
     expect(mentionsInvoice({ reference: 'lunch', counterparty: '' }, 'INV-0042')).toBe(false);
+    // Without padding, INV5 must still never be read out of INV57.
+    expect(mentionsInvoice({ reference: 'INV57', counterparty: '' }, 'INV5')).toBe(false);
+    expect(mentionsInvoice({ reference: 'inv 5 thanks', counterparty: '' }, 'INV5')).toBe(true);
   });
   it('settles automatically only on reference AND exact amount', () => {
     const invoices = [inv()];
@@ -69,5 +73,19 @@ describe('owed summary', () => {
   it('totals what is still owed and what is late', () => {
     const s = owedSummary([inv(), inv({ id: 'i2', dueDate: '2026-12-01' }), inv({ id: 'i3', paidTransactionId: 't' }), inv({ id: 'i4', status: 'draft' })], '2026-09-20');
     expect(s).toEqual({ count: 2, totalPence: 11900, overdueCount: 1, overduePence: 5950 });
+  });
+});
+
+describe('time on invoices', () => {
+  it('works out hours from start and end, past midnight too', () => {
+    expect(hoursBetween('10:00', '13:30')).toBe(3.5);
+    expect(hoursBetween('22:00', '01:15')).toBe(3.25);
+    expect(hoursBetween('9:45', '10:05')).toBe(0.33);
+    expect(hoursBetween('10:00', '10:00')).toBeNull();
+    expect(hoursBetween('25:00', '10:00')).toBeNull();
+  });
+  it('writes the line the way a client reads it', () => {
+    expect(timedDescription('2026-09-03', '10:00', '13:00', 'Shift')).toBe('Thu 3 Sept, 10:00–13:00 · Shift'.replace('Sept', new Date('2026-09-03T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })));
+    expect(timedDescription('2026-09-03', null, null, 'Workshop day')).toMatch(/^Thu 3 Sep\w* · Workshop day$/);
   });
 });

@@ -159,7 +159,7 @@ export interface InvoiceLine {
  */
 export interface Invoice {
   id: string;
-  /** e.g. "INV-0042" — also the payment reference the client is asked to use. */
+  /** e.g. "INV57" — also the payment reference the client is asked to use. */
   number: string;
   streamId: string | null;
   clientName: string;
@@ -198,7 +198,7 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   phone: '',
   sortCode: '',
   accountNumber: '',
-  invoicePrefix: 'INV-',
+  invoicePrefix: 'INV',
   paymentTermsDays: 14,
   footer: 'Thank you!',
 };
@@ -212,6 +212,13 @@ export interface Settings {
   receiptThresholdPence: Pence;
   /** The stream CSTL session income is filed under. */
   cstlStreamId: string | null;
+  /**
+   * Put aside this share of every business payment for tax, as a fixed habit. Null lets Honey
+   * work the share out from the year's tax estimate instead.
+   */
+  setAsidePercent: number | null;
+  /** Your calendar's private iCal link, read to turn sessions and shifts into invoice lines. */
+  calendarUrl: string;
 }
 
 export const DEFAULT_TAX_YEAR_FACTS: TaxYearFacts = {
@@ -228,6 +235,8 @@ export const DEFAULT_SETTINGS: Settings = {
   taxYears: {},
   receiptThresholdPence: 0,
   cstlStreamId: null,
+  setAsidePercent: 20,
+  calendarUrl: '',
 };
 
 export function factsFor(settings: Settings, taxYear: number): TaxYearFacts {

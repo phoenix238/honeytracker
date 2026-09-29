@@ -32,11 +32,18 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
           <Money pence={p.potTargetPence} color={T.accentBright} size={34} />
         </div>
         <div style={{ fontSize: 13, color: T.text, marginTop: 8, lineHeight: 1.5 }}>
-          Put aside <strong>{Math.round(p.estimate.setAsideRate * 100)}%</strong> of every business payment from now on.
+          Put aside <strong>{p.setAside.percent}%</strong> of every business payment{p.setAside.fixed ? '' : ' from now on'}.
         </div>
+        {p.setAside.fixed && (
+          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, lineHeight: 1.5 }}>
+            Your {p.setAside.percent}% habit. Honey’s own estimate of the tax so far is <strong style={{ color: T.text }}>{formatGBP(p.setAside.estimatePence)}</strong>
+            {p.setAside.estimatePence > p.potTargetPence ? ' — more than your pot, so consider putting aside a bit extra.' : ' — your pot covers it.'}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: T.textMuted, marginTop: 6, lineHeight: 1.5 }}>
-          Tax on {taxYearLabel(p.taxYear)} so far{p.previous.stillOwedPence > 0 ? ` + ${taxYearLabel(p.previous.taxYear)}’s bill still to pay` : ''}
-          {p.estimate.lowConfidence ? '. Early in the year — add your expected profit in Tax for a steadier figure.' : '.'}
+          {p.setAside.fixed ? `${p.setAside.percent}% of business income in ${taxYearLabel(p.taxYear)} so far` : `Tax on ${taxYearLabel(p.taxYear)} so far`}
+          {p.previous.stillOwedPence > 0 ? ` + ${taxYearLabel(p.previous.taxYear)}’s bill still to pay` : ''}
+          {!p.setAside.fixed && p.estimate.lowConfidence ? '. Early in the year — add your expected profit in Tax for a steadier figure.' : '.'} Change this in Settings → Tax pot.
         </div>
       </Card>
 

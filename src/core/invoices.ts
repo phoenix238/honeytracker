@@ -27,8 +27,31 @@ export function daysOverdue(inv: Invoice, today: IsoDate): number {
   return Math.round((Date.parse(today) - Date.parse(inv.dueDate)) / 86_400_000);
 }
 
+/** Hours between two clock times ("10:00", "13:30"); an end before the start runs past midnight. */
+export function hoursBetween(start: string, end: string): number | null {
+  const m = (t: string) => {
+    const hit = /^(\d{1,2}):(\d{2})$/.exec(t.trim());
+    return hit && Number(hit[1]) < 24 && Number(hit[2]) < 60 ? Number(hit[1]) * 60 + Number(hit[2]) : null;
+  };
+  const a = m(start);
+  const b = m(end);
+  if (a === null || b === null || a === b) return null;
+  return Math.round((((b - a + 1440) % 1440) / 60) * 100) / 100;
+}
+
+/** "Tue 3 Sep" */
+export function dayLabel(date: IsoDate): string {
+  return new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+/** An invoice line's wording for time worked: "Tue 3 Sep, 10:00–13:00 · Shift". */
+export function timedDescription(date: IsoDate, start: string | null, end: string | null, what = ''): string {
+  return [`${dayLabel(date)}${start && end ? `, ${start}–${end}` : ''}`, what.trim()].filter(Boolean).join(' · ');
+}
+
+/** "INV" + 57 → "INV57": no padding zeros, so the number is exactly the one you count to. */
 export function formatInvoiceNumber(prefix: string, n: number): string {
-  return `${prefix}${String(n).padStart(4, '0')}`;
+  return `${prefix}${n}`;
 }
 
 /** Letters and digits only, upper-cased: "inv-0042" and "INV 0042" compare equal. */

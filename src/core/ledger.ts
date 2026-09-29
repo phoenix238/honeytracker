@@ -165,6 +165,11 @@ export interface TaxPicture {
   upcoming: Payment[];
   /** What the tax pot should hold right now to cover tax on everything earned so far. */
   potTargetPence: Pence;
+  /**
+   * How the pot is worked out: a fixed share of every business payment you chose (`fixed`), or
+   * Honey's tax estimate. `estimatePence` is always Honey's estimate, for comparison.
+   */
+  setAside: { fixed: boolean; percent: number; estimatePence: Pence; estimatePercent: number };
   review: ReviewState;
 }
 
@@ -199,6 +204,12 @@ export function taxPicture(
   const prevDeadline = `${Y + 1}-01-31`;
   const prevStillOwed = asOf > prevDeadline ? 0 : Math.max(0, prevLiability - prevFacts.paidToHmrcPence);
 
+  // A fixed habit — "20% of every payment" — counts business money in so far this year (refunds
+  // to clients taken off), less anything already paid to HMRC towards this year.
+  const fixed = settings.setAsidePercent != null;
+  const businessIn = tradingStreams(thisYear, streams).reduce((a, s) => a + s.grossPence, 0);
+  const fixedPot = fixed ? Math.max(0, Math.round((businessIn * settings.setAsidePercent!) / 100) - facts.paidToHmrcPence) : 0;
+
   const schedule = paymentSchedule({
     taxYear: Y,
     previousLiabilityPence: prevLiability,
@@ -221,7 +232,13 @@ export function taxPicture(
       stillOwedPence: prevStillOwed,
     },
     upcoming: schedule.filter((p) => p.due >= asOf),
-    potTargetPence: prevStillOwed + estimate.owedNowPence,
+    potTargetPence: prevStillOwed + (fixed ? fixedPot : estimate.owedNowPence),
+    setAside: {
+      fixed,
+      percent: fixed ? settings.setAsidePercent! : Math.round(estimate.setAsideRate * 1000) / 10,
+      estimatePence: prevStillOwed + estimate.owedNowPence,
+      estimatePercent: Math.round(estimate.setAsideRate * 1000) / 10,
+    },
     review: reviewState(txns, settings, bounds),
   };
 }
