@@ -10,12 +10,13 @@ import type { Transaction } from '../../core/types';
 import type { App } from '../useApp';
 
 // Every movement of money. Sorting happens in the swipe deck; this is where you look things up,
-// see the totals, and find what you swiped away ("Not business") to put it back.
+// see the totals, and find what you swiped away ("Not business") to put it back. Records brought
+// over from the old app are just rows like any other — no separate place to look.
 
-type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'in' | 'out' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
+type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'all' | 'in' | 'out' | 'ai' | 'receipts' | 'auto';
 
-const fromOldApp = (t: Transaction) => t.source === 'import' || Boolean(t.meta.importedFrom);
-const isBusiness = (t: Transaction) => t.bucket === 'business_income' || t.bucket === 'business_expense';
+/** Filters you rarely need, kept behind "More" so the everyday four stay clear. */
+const MORE_FILTERS: readonly Filter[] = ['in', 'out', 'receipts', 'auto', 'ai'];
 
 // Least certain first, so the ones worth a real look come to the top.
 const CONF: Record<string, number> = { low: 0, medium: 1, high: 2 };
@@ -26,6 +27,7 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
   const [filter, setFilter] = useState<Filter>('review');
   const [year, setYear] = useState<number | 'all'>(currentYear);
   const [q, setQ] = useState('');
+  const [more, setMore] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const streams = new Map(data.streams.map((s) => [s.id, s]));
 
@@ -42,23 +44,16 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
       if (filter === 'out' && t.direction !== 'out') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
       if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
-      if (filter === 'old' && !fromOldApp(t)) return false;
       if (filter === 'auto' && t.classifiedBy !== 'rule' && t.classifiedBy !== 'cstl' && t.classifiedBy !== 'import' && t.classifiedBy !== 'invoice') return false;
       if (needle && !`${t.counterparty} ${t.reference} ${t.note}`.toLowerCase().includes(needle) && !(t.amountPence / 100).toFixed(2).includes(needle)) return false;
       return true;
     }).sort((a, b) =>
-      filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']!
-      // Old-app records the new app doesn't count as business come first: those are the gap.
-      : filter === 'old' ? Number(isBusiness(a)) - Number(isBusiness(b))
-      : 0);
+      filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']! : 0);
   }, [data, filter, year, q]);
   const aiRows = data.transactions.filter((t) => t.classifiedBy === 'ai');
   // Anything the AI has ever decided, confirmed or not — what "undo" can rewind.
   const aiTouched = data.transactions.some((t) => t.meta.aiReason);
-  const oldRows = filter === 'old' ? rows : [];
-  const sumOf = (list: Transaction[]) => list.reduce((a, t) => a + t.amountPence, 0);
-  const oldCosts = oldRows.filter((t) => t.direction === 'out');
-  const oldIncome = oldRows.filter((t) => t.direction === 'in');
+  const showMore = more || MORE_FILTERS.includes(filter);
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
   // What the list adds up to, where a total means something.
@@ -91,11 +86,6 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
         </Button>
       )}
 
-      {data.config.aiSort && aiQueue > 0 && !app.aiProgress && (
-        <Button onClick={app.aiSortAll} disabled={app.busy}>
-          🤖 Sort {aiQueue} with AI, then I’ll check
-        </Button>
-      )}
       {app.aiProgress && (
         <Card style={{ borderColor: T.accent + '66' }}>
           <Label color={T.accent}>{app.aiProgress.photos ? 'AI reading your old receipt photos…' : 'AI sorting…'}</Label>
@@ -122,33 +112,6 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
           >
             Looks right — confirm all {aiRows.length}
           </Button>
-        </Card>
-      )}
-
-      {aiTouched && !app.aiProgress && (
-        <Button
-          tone="quiet"
-          disabled={app.busy}
-          onClick={async () => {
-            if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are. You can run the AI again afterwards.')) return;
-            await app.aiUndo();
-          }}
-        >
-          ↩︎ Undo AI sorting
-        </Button>
-      )}
-
-      {filter === 'old' && (
-        <Card>
-          <Label>From your old app{year === 'all' ? '' : ` · ${taxYearLabel(year)}`}</Label>
-          <div style={{ fontSize: 13, lineHeight: 1.7, marginTop: 6 }}>
-            Costs: {oldCosts.length} · <Money pence={sumOf(oldCosts)} size={13} /> — counted as business here: <Money pence={sumOf(oldCosts.filter(isBusiness))} size={13} />
-            <br />
-            Income: {oldIncome.length} · <Money pence={sumOf(oldIncome)} size={13} /> — counted as business here: <Money pence={sumOf(oldIncome.filter(isBusiness))} size={13} />
-          </div>
-          <div style={{ fontSize: 12, color: T.textMuted, marginTop: 6, lineHeight: 1.5 }}>
-            Ones not counted as business are listed first — open one to put it right. Only records your old app marked as business costs or paid income come across; its Bank tab “Spending” (all card spending) doesn’t.
-          </div>
         </Card>
       )}
 
@@ -191,19 +154,44 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
         </Card>
       )}
 
-      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <Chip active={filter === 'review'} onClick={() => setFilter('review')}>To sort</Chip>
         <Chip active={filter === 'income'} color={T.green} onClick={() => setFilter('income')}>Income</Chip>
         <Chip active={filter === 'costs'} color={T.expense} onClick={() => setFilter('costs')}>Costs</Chip>
         <Chip active={filter === 'notbusiness'} color={T.textMuted} onClick={() => setFilter('notbusiness')}>Not business</Chip>
-        <Chip active={filter === 'in'} color={T.green} onClick={() => setFilter('in')}>Money in</Chip>
-        <Chip active={filter === 'out'} onClick={() => setFilter('out')}>Money out</Chip>
-        {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
-        {data.transactions.some(fromOldApp) && <Chip active={filter === 'old'} onClick={() => setFilter('old')}>Old app</Chip>}
-        <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
-        <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Auto-sorted</Chip>
         <Chip active={filter === 'all'} onClick={() => setFilter('all')}>All</Chip>
+        <Chip active={MORE_FILTERS.includes(filter)} onClick={() => { if (showMore && MORE_FILTERS.includes(filter)) setFilter('review'); setMore(!showMore); }}>
+          More {showMore ? '▴' : '▾'}
+        </Chip>
       </div>
+      {showMore && (
+        <Card style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Chip active={filter === 'in'} color={T.green} onClick={() => setFilter('in')}>Money in</Chip>
+            <Chip active={filter === 'out'} onClick={() => setFilter('out')}>Money out</Chip>
+            <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
+            <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Sorted automatically</Chip>
+            {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
+          </div>
+          {data.config.aiSort && aiQueue > 0 && !app.aiProgress && (
+            <Button onClick={app.aiSortAll} disabled={app.busy}>
+              🤖 Sort {aiQueue} with AI, then I’ll check
+            </Button>
+          )}
+          {aiTouched && !app.aiProgress && (
+            <Button
+              tone="quiet"
+              disabled={app.busy}
+              onClick={async () => {
+                if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are. You can run the AI again afterwards.')) return;
+                await app.aiUndo();
+              }}
+            >
+              ↩︎ Undo AI sorting
+            </Button>
+          )}
+        </Card>
+      )}
       <div style={{ display: 'flex', gap: 8 }}>
         <select style={{ ...inputStyle, width: 'auto' }} value={String(year)} onChange={(e) => setYear(e.target.value === 'all' ? 'all' : Number(e.target.value))}>
           {years.map((y) => (

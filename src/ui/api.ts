@@ -138,7 +138,6 @@ export const api = {
     call<{ events: CalendarEvent[] }>('GET', `/api/calendar/events?from=${from}&to=${to}`),
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
 
-  aiRestreamImports: () => call<{ marked: number }>('POST', '/api/ai/restream-imports', {}),
   aiReadReceipts: () => call<{ read: number; tried: number; remaining: number }>('POST', '/api/ai/read-receipts', {}),
   googleConnect: () => call<{ token: string; since: string }>('POST', '/api/google/connect', {}),
   googleDisconnect: () => call<{ ok: boolean }>('POST', '/api/google/disconnect', {}),

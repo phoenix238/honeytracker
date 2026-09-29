@@ -1,10 +1,9 @@
-import { useRef, useState } from 'react';
-import { T } from '../theme';
-import { BUCKET_LABEL, Button, Card, Chip, Field, Label, Section, Title, inputStyle } from '../components';
+import { useRef, useState, type ReactNode } from 'react';
+import { T, fonts } from '../theme';
+import { BUCKET_LABEL, Button, Card, Chip, Field, Section, Title, inputStyle } from '../components';
 import { categoryInfo } from '../../core/hmrc';
 import { formatAmount, parsePence } from '../../core/money';
-import { parseHoneypotBackup, parseLocalV0, type ImportedItem } from '../../core/importers';
-import { STORES, getAll } from '../../storage/db';
+import { parseHoneypotBackup, type ImportedItem } from '../../core/importers';
 import { api } from '../api';
 import type { BusinessProfile, Stream } from '../../core/types';
 import type { App } from '../useApp';
@@ -16,31 +15,51 @@ const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'
 export function SettingsView({ app }: { app: App }) {
   const data = app.data!;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
       <Title>Settings</Title>
-      <ProfileSection app={app} />
-      <StreamsSection app={app} />
-      <SpreadsheetSection app={app} />
-      <ConnectionsSection app={app} />
-      <GoogleSection app={app} />
-      <RulesSection app={app} />
-      <TaxPotSection app={app} />
-      <CalendarSection app={app} />
-      <Section title="Receipts">
-        <Card>
-          <Field label="Ask for a receipt on business costs over (£)" hint="HMRC expects records for every cost; set 0 to be asked about all of them.">
-            <input
-              style={inputStyle}
-              inputMode="decimal"
-              defaultValue={formatAmount(data.settings.receiptThresholdPence)}
-              onBlur={(e) => app.saveSettings({ receiptThresholdPence: parsePence(e.target.value) })}
-            />
-          </Field>
-        </Card>
-      </Section>
-      <StorageSection app={app} />
-      <ImportSection app={app} />
+
+      <Group title="You & invoices">
+        <ProfileSection app={app} />
+        <CalendarSection app={app} />
+      </Group>
+
+      <Group title="Money coming in">
+        <StreamsSection app={app} />
+        <ConnectionsSection app={app} />
+        <GoogleSection app={app} />
+        <RulesSection app={app} />
+        <TaxPotSection app={app} />
+        <Section title="Receipts">
+          <Card>
+            <Field label="Ask for a receipt on business costs over (£)" hint="HMRC expects records for every cost; set 0 to be asked about all of them.">
+              <input
+                style={inputStyle}
+                inputMode="decimal"
+                defaultValue={formatAmount(data.settings.receiptThresholdPence)}
+                onBlur={(e) => app.saveSettings({ receiptThresholdPence: parsePence(e.target.value) })}
+              />
+            </Field>
+          </Card>
+        </Section>
+      </Group>
+
+      <Group title="Files & exports">
+        <SpreadsheetSection app={app} />
+        <StorageSection app={app} />
+        <ImportSection app={app} />
+      </Group>
+
       <Button tone="danger" onClick={app.signOut}>Sign out</Button>
+    </div>
+  );
+}
+
+/** A heading over related settings, so the page reads as three parts, not twelve. */
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 4 }}>
+      <h2 style={{ margin: 0, fontFamily: fonts.display, fontSize: 18, fontWeight: 800, color: T.text, borderBottom: `1px solid ${T.border}`, paddingBottom: 6 }}>{title}</h2>
+      {children}
     </div>
   );
 }
@@ -171,14 +190,19 @@ function RulesSection({ app }: { app: App }) {
   );
 }
 
+/**
+ * Records from the old app (Honeypot0101) come in once, from its backup file, and then they're
+ * ordinary rows — sorted, searched and exported like everything else. Once they're in, this
+ * shrinks to one line; bringing the same file in again never doubles anything.
+ */
 function ImportSection({ app }: { app: App }) {
   const data = app.data!;
   const fileRef = useRef<HTMLInputElement>(null);
-  // With several streams the old app can't say which is which, so by default the AI decides.
-  const aiStreams = data.config.aiSort && data.streams.filter((s) => !s.archived).length > 1;
-  const [streamId, setStreamId] = useState<string | null>(aiStreams ? null : data.streams[0]?.id ?? null);
+  const brought = data.transactions.filter((t) => t.source === 'import' || t.meta.importedFrom).length;
+  const active = data.streams.filter((s) => !s.archived);
+  const [streamId, setStreamId] = useState<string | null>(active.length === 1 ? active[0]!.id : null);
   const [status, setStatus] = useState('');
-
+  const [open, setOpen] = useState(false);
   const [importing, setImporting] = useState(false);
 
   const send = async (items: ImportedItem[]) => {
@@ -246,74 +270,40 @@ function ImportSection({ app }: { app: App }) {
     }
   };
 
-  const fromDevice = async () => {
-    try {
-      const [income, expenses] = await Promise.all([getAll<Record<string, unknown>>(STORES.income), getAll<Record<string, unknown>>(STORES.expenses)]);
-      const items = parseLocalV0(income, expenses);
-      if (!items.length) {
-        setStatus('Nothing stored on this device from the earlier version.');
-        return;
-      }
-      await send(items);
-    } catch (e) {
-      setStatus((e as Error).message);
-    }
-  };
-
   return (
-    <Section title="Bring in old records">
+    <Section title="Old app records">
       <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
-          Sync the bank first, so old records can be matched to their bank lines instead of counted twice. Anything with no bank line (cash) is added and marked for you to check.
-        </div>
-        {data.streams.length > 0 && (
-          <Field label="File imported income and costs under" hint={streamId === null ? 'Each record comes in with no stream; then tap “Sort with AI” in Money and it picks the stream for each one, for you to check.' : 'Everything imported goes under this one stream.'}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <Chip active={streamId === null} color={T.green} onClick={() => setStreamId(null)}>{data.config.aiSort ? '🤖 Sort streams later (AI)' : 'Decide later'}</Chip>
-              {data.streams.filter((s) => !s.archived).map((s) => <Chip key={s.id} active={streamId === s.id} color={s.color} onClick={() => setStreamId(s.id)}>{s.name}</Chip>)}
+        {brought > 0 && !open && !importing ? (
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            ✓ {brought} record{brought === 1 ? '' : 's'} from your old app are in, mixed in with everything else under Money.{' '}
+            <button type="button" onClick={() => setOpen(true)} style={{ background: 'none', border: 'none', color: T.textMuted, textDecoration: 'underline', padding: 0, fontSize: 12, cursor: 'pointer' }}>
+              Bring in a backup again
+            </button>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+              In the old app: Settings → Export backup, then pick that .json file here. Sync the bank first, so old records join their bank lines instead of being counted twice. Anything with no bank line (cash) comes in as its own row. Bringing the same file in twice never doubles anything.
             </div>
-          </Field>
+            {active.length > 1 && (
+              <Field label="File them under" hint={streamId === null ? 'They wait in Sort for you to pick the stream, one swipe each (similar ones together).' : 'Everything brought in goes under this one stream.'}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <Chip active={streamId === null} onClick={() => setStreamId(null)}>Pick while sorting</Chip>
+                  {active.map((s) => <Chip key={s.id} active={streamId === s.id} color={s.color} onClick={() => setStreamId(s.id)}>{s.name}</Chip>)}
+                </div>
+              </Field>
+            )}
+            <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void fromFile(f); }} />
+            <Button tone={brought ? 'plain' : 'primary'} disabled={importing} onClick={() => fileRef.current?.click()}>
+              {importing ? 'Bringing them in…' : 'Choose the backup file'}
+            </Button>
+          </>
         )}
-        <input ref={fileRef} type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void fromFile(f); }} />
-        <Button tone="primary" disabled={importing} onClick={() => fileRef.current?.click()}>
-          {importing ? 'Importing…' : 'Import a Honey backup file (Honeypot0101 → Export backup)'}
-        </Button>
-        <Button onClick={fromDevice}>Upload records saved on this device by the earlier version</Button>
         {status && (
           <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5, background: T.bg, border: `1px solid ${status.startsWith('Import didn') ? T.danger : T.accent}`, borderRadius: 10, padding: '10px 12px' }}>
             {status}
           </div>
         )}
-        {data.config.aiSort && data.transactions.some((t) => t.classifiedBy === 'import') && (
-          <Button
-            disabled={app.busy || Boolean(app.aiProgress)}
-            onClick={async () => {
-              if (!window.confirm('Put every imported record back through the AI to choose its stream? You’ll check its choices under Money → AI: check.')) return;
-              const r = await api.aiRestreamImports().catch((e: Error) => { setStatus(e.message); return null; });
-              if (!r) return;
-              setStatus(`${r.marked} imported records queued — sorting now…`);
-              await app.aiSortAll();
-              setStatus('Done — check the results under Money → AI: check.');
-            }}
-          >
-            🤖 Let AI re-sort the streams of imported records
-          </Button>
-        )}
-        {data.transactions.some((t) => t.meta.aiReason) && (
-          <Button
-            tone="quiet"
-            disabled={app.busy || Boolean(app.aiProgress)}
-            onClick={async () => {
-              if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are.')) return;
-              await app.aiUndo();
-              setStatus('AI sorting undone. Compare with your old app under Money → Old app (pick “All years”).');
-            }}
-          >
-            ↩︎ Undo AI sorting
-          </Button>
-        )}
-        <Label>Export</Label>
-        <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV for an accountant from the Tax tab. To edit in a spreadsheet and bring it back, see “Spreadsheet & other banks” above.</div>
       </Card>
     </Section>
   );

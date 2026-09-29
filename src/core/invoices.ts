@@ -108,24 +108,34 @@ export function paymentCandidates(inv: Invoice, txns: readonly Transaction[]): T
     });
 }
 
+/** Letters only, and no "Ltd": "ETHICAL CAFF LTD" and "Ethical Caff Limited" read the same. */
+function nameKey(s: string): string {
+  return s.toLowerCase().replace(/\b(ltd|limited|plc|llp|the)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim();
+}
+
+/** The payer looks like the invoice's client: "ETHICAL CAFF LTD" for Ethical Caff, or a bank's cut-short "ETHICAL CA". */
+function paidByClient(t: Pick<Transaction, 'counterparty' | 'reference'>, inv: Pick<Invoice, 'clientName'>): boolean {
+  const client = nameKey(inv.clientName);
+  if (client.length < 3) return false;
+  const payer = nameKey(t.counterparty);
+  return nameKey(`${t.counterparty} ${t.reference}`).includes(client) || (payer.length >= 3 && client.includes(payer));
+}
+
 /**
- * Every payment in that could have settled this invoice, best first: the exact amount, then the
- * rest by how close the amount is — for a client who paid a little less or more, or paid two
- * invoices in one go. Nothing already settling an invoice, and no transfers between your own accounts.
+ * Every payment in that could have settled this invoice, best first: one quoting its number,
+ * then one from the client by name, then the rest by how close the amount is — for a client who
+ * paid a little less or more, or paid two invoices in one go. Nothing already settling an
+ * invoice, and no transfers between your own accounts.
  */
 export function possiblePayments(inv: Invoice, txns: readonly Transaction[], limit = 15): Transaction[] {
   const total = invoiceTotal(inv);
   const from = addDays(inv.issueDate, -7);
-  const score = (t: Transaction) => (mentionsInvoice(t, inv.number) ? 0 : 1) * 1e12 + Math.abs(t.amountPence - total) * 1e3 + Math.abs(Date.parse(t.date) - Date.parse(inv.issueDate)) / 8.64e7;
+  const tier = (t: Transaction) => (mentionsInvoice(t, inv.number) ? 0 : paidByClient(t, inv) ? 1 : 2);
+  const score = (t: Transaction) => tier(t) * 1e12 + Math.abs(t.amountPence - total) * 1e3 + Math.abs(Date.parse(t.date) - Date.parse(inv.issueDate)) / 8.64e7;
   return txns
     .filter((t) => t.direction === 'in' && t.date >= from && !t.meta.invoiceId && t.bucket !== 'transfer' && t.bucket !== 'personal')
     .sort((a, b) => score(a) - score(b))
     .slice(0, limit);
-}
-
-/** Letters only, and no "Ltd": "ETHICAL CAFF LTD" and "Ethical Caff Limited" read the same. */
-function nameKey(s: string): string {
-  return s.toLowerCase().replace(/\b(ltd|limited|plc|llp|the)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim();
 }
 
 /**
@@ -138,11 +148,7 @@ export function invoiceGuess(t: Pick<Transaction, 'direction' | 'amountPence' | 
   const open = openInvoices(invoices);
   const byNumber = open.filter((i) => mentionsInvoice(t, i.number));
   if (byNumber.length === 1) return byNumber[0]!;
-  const payer = nameKey(`${t.counterparty} ${t.reference}`);
-  const byName = open.filter((i) => {
-    const client = nameKey(i.clientName);
-    return client.length >= 3 && (payer.includes(client) || (payer.length >= 3 && client.includes(nameKey(t.counterparty)) && nameKey(t.counterparty).length >= 3));
-  });
+  const byName = open.filter((i) => paidByClient(t, i));
   if (byName.length === 1) return byName[0]!;
   const exact = byName.filter((i) => invoiceTotal(i) === t.amountPence);
   return exact.length === 1 ? exact[0]! : null;

@@ -102,6 +102,13 @@ describe('payments that don’t match exactly', () => {
     const mine = txn({ direction: 'in', amountPence: 14513, date: '2026-09-12', bucket: 'transfer' });
     expect(possiblePayments(i, [far, short, exact, before, taken, mine]).map((t) => t.id)).toEqual([exact.id, short.id, far.id]);
   });
+  it('puts a payment from the client by name above another client’s of the same amount', () => {
+    const i = sent({ number: 'INV57', clientName: 'Sam Client', issueDate: '2026-09-20', lines: [{ description: 'x', quantity: 1, unitPence: 6500 }] });
+    const lara = txn({ direction: 'in', amountPence: 6000, date: '2026-09-19', counterparty: 'Lara Bligh' });
+    const sam = txn({ direction: 'in', amountPence: 6000, date: '2026-09-27', counterparty: 'SAM CLIENT' });
+    const quoted = txn({ direction: 'in', amountPence: 100, date: '2026-09-30', counterparty: 'X', reference: 'INV57' });
+    expect(possiblePayments(i, [lara, sam, quoted]).map((t) => t.id)).toEqual([quoted.id, sam.id, lara.id]);
+  });
   it('guesses the invoice from the payer’s name or the number — only when there’s one that fits', () => {
     const caff = sent({ id: 'c', number: 'INV57', clientName: 'Ethical Caff Ltd', lines: [{ description: 'x', quantity: 1, unitPence: 14513 }] });
     const sam = sent({ id: 's', number: 'INV58', clientName: 'Sam Client', lines: [{ description: 'x', quantity: 1, unitPence: 6000 }] });
