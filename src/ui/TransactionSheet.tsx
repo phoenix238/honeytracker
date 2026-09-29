@@ -109,7 +109,9 @@ export function TransactionSheet({
       <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
         {txn.reference && <div>Reference: <strong style={{ color: T.text }}>{txn.reference}</strong></div>}
         <div>
-          From {txn.source === 'starling' ? `Starling${txn.meta.account ? ` · ${txn.meta.account}` : ''}` : txn.source === 'cstl' ? 'CSTL' : txn.source === 'import' ? 'old Honey app' : 'you (cash / manual)'}
+          From {txn.source === 'starling' ? `Starling${txn.meta.account ? ` · ${txn.meta.account}` : ''}`
+            : txn.source === 'monzo' || txn.source === 'bankcsv' ? `${txn.meta.account || 'a bank'} statement`
+            : txn.source === 'cstl' ? 'CSTL' : txn.source === 'import' ? 'old Honey app' : 'you (cash / manual)'}
           {txn.classifiedBy && txn.classifiedBy !== 'user' && ` · classified by ${txn.classifiedBy === 'rule' ? 'a rule' : txn.classifiedBy === 'cstl' ? 'CSTL' : txn.classifiedBy === 'ai' ? 'AI' : txn.classifiedBy === 'invoice' ? 'its invoice' : 'the import'}`}
         </div>
         {txn.classifiedBy === 'ai' && (

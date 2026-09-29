@@ -1,5 +1,6 @@
 import type { Invoice, Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
 import type { ImportedItem } from '../core/importers';
+import type { StatementLine } from '../core/bankCsv';
 
 // The app's only door to the server. Every call either returns data or throws an ApiError
 // carrying the server's own message — nothing fails silently.
@@ -125,6 +126,10 @@ export const api = {
   aiUndo: () => call<{ undone: number; kept: number; cleared: number }>('POST', '/api/ai/undo', {}),
   aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 
+  importBank: (b: { importId: string; account: string; kind: 'monzo' | 'bank'; lines: StatementLine[] }) =>
+    call<{ added: number; sortedByRules: number; potMoves: number; already: number; unreadable: number }>('POST', '/api/import/bank', b),
+  undoImport: (importId: string) => call<{ removed: number; kept: number }>('POST', `/api/imports/${importId}/undo`, {}),
+
   importItems: (items: ImportedItem[], streamId: string | null) =>
     call<{ linked: number; created: number; skipped: number; already: number; unreadable: number; receipts: number }>('POST', '/api/import', { items, streamId }),
 };
@@ -132,3 +137,4 @@ export const api = {
 export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;
 export const invoicePdfUrl = (id: string, download = false) => `/api/invoices/${id}/pdf${download ? '?download=1' : ''}`;
 export const exportCsvUrl = (year: number) => `/api/export.csv?year=${year}`;
+export const exportEditUrl = (year: number | 'all') => `/api/export-edit.csv?year=${year}`;

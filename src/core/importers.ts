@@ -1,4 +1,5 @@
 import type { ExpenseCategory, IsoDate, Pence, Transaction } from './types.js';
+import { isBankRow } from './types.js';
 import { legacyCategory } from './hmrc.js';
 import { parsePence } from './money.js';
 import { datesClose } from './dates.js';
@@ -115,7 +116,7 @@ export function findBankTwin(
   let best: Transaction | null = null;
   let bestGap = Infinity;
   for (const t of bankRows) {
-    if (t.source !== 'starling' || t.direction !== direction || claimed.has(t.id)) continue;
+    if (!isBankRow(t) || t.direction !== direction || claimed.has(t.id)) continue;
     if (t.amountPence !== item.amountPence || !datesClose(t.date, item.date, 6)) continue;
     const gap = Math.abs(new Date(t.date).getTime() - new Date(item.date).getTime());
     if (gap < bestGap) {

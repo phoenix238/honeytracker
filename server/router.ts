@@ -13,11 +13,12 @@ import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
 import { planBatchUndo } from './batchUndo.js';
-import { linkInvoicePayment } from './sync.js';
+import { applyRules, linkInvoicePayment } from './sync.js';
+import { editCsv } from '../src/core/csvRoundTrip.js';
 import { isCategory } from '../src/core/hmrc.js';
 import { taxYearBounds, taxYearOf, today, withinBounds } from '../src/core/dates.js';
 import type { Bucket, BusinessProfile, Direction, Invoice, InvoiceLine, Rule, Settings, Stream, TaxYearFacts, Transaction } from '../src/core/types.js';
-import { DEFAULT_PROFILE } from '../src/core/types.js';
+import { DEFAULT_PROFILE, isBankRow } from '../src/core/types.js';
 import { addDays } from '../src/core/dates.js';
 
 // The whole API as one web-standard handler: Request in, Response out. The Vercel function
@@ -330,7 +331,7 @@ const routes: [string, RegExp, Handler][] = [
     if (!t) throw new HttpError(404, 'Not found');
     // Bank rows can't be deleted — they'd come straight back on the next sync, and a gap in
     // the bank record is exactly what a tax enquiry looks for. Classify them as personal.
-    if (t.source === 'starling') throw new HttpError(400, 'Bank rows can’t be deleted — mark it Personal instead.');
+    if (isBankRow(t)) throw new HttpError(400, 'Bank rows can’t be deleted — mark it Personal instead.');
     await r.deleteTransaction(id!);
     return json({ ok: true });
   }],
@@ -699,7 +700,7 @@ const routes: [string, RegExp, Handler][] = [
     const b = await body<{ items?: ImportedItem[]; streamId?: string | null }>(req);
     const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
     const streamId = b.streamId ? str(b.streamId, 64) : null;
-    const bank = (await r.listTransactions()).filter((t) => t.source === 'starling');
+    const bank = (await r.listTransactions()).filter(isBankRow);
     // Bank rows already claimed by an earlier import batch stay claimed.
     const claimed = new Set(bank.filter((t) => t.meta.importedFrom).map((t) => t.id));
     const out = { linked: 0, created: 0, skipped: 0, already: 0, unreadable: 0, receipts: 0 };
@@ -748,7 +749,71 @@ const routes: [string, RegExp, Handler][] = [
     return json(out);
   }],
 
+  // ── Statements from other banks (Monzo, …) ───────────────────────────────────────
+  // Lines read from a statement CSV in the app. Each lands once (its bank id, or one made from the
+  // line, is the key), goes through your rules like the bank feed, and moves to or from the
+  // account's own pots are transfers. The app sends a big statement in parts, all under one
+  // import id, so the whole import can be taken back if it was the wrong file.
+  ['POST', /^\/api\/import\/bank$/, async (req, r) => {
+    const b = await body<{ importId?: unknown; account?: unknown; kind?: unknown; lines?: unknown }>(req);
+    const importId = str(b.importId, 64);
+    if (!/^[\w-]{8,64}$/.test(importId)) throw new HttpError(400, 'Missing import id');
+    const account = str(b.account, 60).trim() || 'Other bank';
+    const source = b.kind === 'monzo' ? 'monzo' : 'bankcsv';
+    const lines = Array.isArray(b.lines) ? (b.lines as Record<string, unknown>[]).slice(0, 1000) : [];
+    const rules = await r.listRules();
+    const out = { added: 0, sortedByRules: 0, potMoves: 0, already: 0, unreadable: 0 };
+    for (const l of lines) {
+      const amountPence = Number(l.amountPence);
+      const sourceId = str(l.sourceId, 200);
+      if (!isDate(l.date) || !Number.isInteger(amountPence) || amountPence <= 0 || amountPence > 1_000_000_000 || !sourceId) { out.unreadable++; continue; }
+      const ownMove = l.ownMove === true;
+      const { row, ruled } = applyRules(rules, {
+        date: l.date, amountPence, direction: l.direction === 'in' ? 'in' : 'out', source,
+        // Not the account name: renaming it between two overlapping statements mustn't double lines.
+        sourceId,
+        counterparty: str(l.counterparty, 200), reference: str(l.reference, 200),
+        bucket: ownMove ? 'transfer' : 'unreviewed', streamId: null, category: null, businessPercent: 100, note: '',
+        classifiedBy: ownMove ? 'rule' : null,
+        meta: { account, bankType: str(l.bankType, 60), bankCategory: str(l.bankCategory, 60), importId },
+      });
+      const inserted = await r.insertTransaction(row);
+      if (!inserted) { out.already++; continue; }
+      out.added++;
+      if (ruled) out.sortedByRules++;
+      else if (ownMove) out.potMoves++;
+    }
+    return json(out);
+  }],
+  // Take back a statement import: its lines go, except any you've sorted yourself since.
+  ['POST', /^\/api\/imports\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
+    const mine = (await r.listTransactions()).filter((t) => isBankRow(t) && t.source !== 'starling' && t.meta.importId === id);
+    if (!mine.length) throw new HttpError(404, 'Nothing from that import is left to take back.');
+    let removed = 0;
+    for (const t of mine) {
+      if (t.classifiedBy === 'user') continue;
+      await r.deleteTransaction(t.id);
+      removed++;
+    }
+    return json({ removed, kept: mine.length - removed });
+  }],
+
   // ── Export ────────────────────────────────────────────────────────────────────────
+  // The ledger to edit in a spreadsheet and bring back (Settings → Spreadsheet).
+  ['GET', /^\/api\/export-edit\.csv$/, async (_req, r, _p, url) => {
+    const which = url.searchParams.get('year');
+    const all = await r.listTransactions();
+    const year = which === 'all' ? null : Number(which) || taxYearOf(today());
+    const txns = year === null ? all : all.filter((t) => withinBounds(t.date, taxYearBounds(year)));
+    const name = year === null ? 'honey-all' : `honey-${year}-${String((year + 1) % 100).padStart(2, '0')}`;
+    return new Response(editCsv(txns, await r.listStreams()), {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${name}-to-edit.csv"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }],
   ['GET', /^\/api\/export\.csv$/, async (_req, r, _p, url) => {
     const year = Number(url.searchParams.get('year')) || taxYearOf(today());
     const bounds = taxYearBounds(year);

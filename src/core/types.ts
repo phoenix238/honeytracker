@@ -21,7 +21,11 @@ export type Direction = 'in' | 'out';
 export type Bucket = 'unreviewed' | 'business_income' | 'business_expense' | 'personal' | 'transfer';
 
 /** Where a row came from. `sourceId` is that source's own unique id — the idempotency key. */
-export type Source = 'starling' | 'cash' | 'manual' | 'cstl' | 'import';
+export type Source = 'starling' | 'monzo' | 'bankcsv' | 'cash' | 'manual' | 'cstl' | 'import';
+
+/** Rows that are the bank's record: never deleted, never rewritten, only classified. */
+export const BANK_SOURCES: readonly Source[] = ['starling', 'monzo', 'bankcsv'];
+export const isBankRow = (t: Pick<Transaction, 'source'>) => BANK_SOURCES.includes(t.source);
 
 /** Who set the classification — so auto-classified rows can be spot-checked. */
 export type ClassifiedBy = 'user' | 'rule' | 'cstl' | 'import' | 'invoice' | 'ai';

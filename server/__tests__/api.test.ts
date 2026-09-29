@@ -805,3 +805,53 @@ describe('sorting in batches, and undo', () => {
     expect(after).toMatchObject({ bucket: 'business_expense', streamId: stream.id, category: 'carVanTravelExpenses' });
   });
 });
+
+describe('other banks and spreadsheets', () => {
+  const lines = [
+    { sourceId: 'tx_1', date: thisYear(), amountPence: 2000, direction: 'out', counterparty: 'WHR Consulting Ltd', reference: '', ownMove: false, bankType: 'Faster payment', bankCategory: 'Bills' },
+    { sourceId: 'tx_2', date: thisYear(), amountPence: 20000, direction: 'out', counterparty: 'Studio Rent', reference: '', ownMove: true, bankType: 'Pot transfer', bankCategory: '' },
+    { sourceId: 'tx_3', date: thisYear(), amountPence: 6000, direction: 'in', counterparty: 'Lara Bligh', reference: 'Thanks', ownMove: false, bankType: 'Faster payment', bankCategory: '' },
+  ];
+
+  it('brings in a Monzo statement once, through your rules, with pots as transfers — and can take it back', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    await call('POST', '/api/rules', { field: 'counterparty', pattern: 'whr consulting', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
+    const first = await call('POST', '/api/import/bank', { importId: 'import-monzo-1', account: 'Monzo', kind: 'monzo', lines });
+    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, already: 0, unreadable: 0 });
+    const again = await call('POST', '/api/import/bank', { importId: 'import-monzo-2', account: 'Monzo', kind: 'monzo', lines });
+    expect(again.data).toMatchObject({ added: 0, already: 3 });
+
+    let txns: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    const by = (sid: string) => txns.find((t) => t.sourceId === sid)!;
+    expect(by('tx_1')).toMatchObject({ source: 'monzo', bucket: 'business_expense', category: 'premisesRunningCosts', classifiedBy: 'rule' });
+    expect(by('tx_2')).toMatchObject({ bucket: 'transfer' });
+    expect(by('tx_3').meta).toMatchObject({ account: 'Monzo', importId: 'import-monzo-1' });
+    // A bank line can't be deleted by hand…
+    expect((await call('DELETE', `/api/transactions/${by('tx_3').id}`)).status).toBe(400);
+    // …but a wrong import can be taken back, keeping anything you've sorted since.
+    await call('PATCH', `/api/transactions/${by('tx_3').id}`, { bucket: 'business_income', streamId: stream.id });
+    const undo = await call('POST', '/api/imports/import-monzo-1/undo', {});
+    expect(undo.data).toEqual({ removed: 2, kept: 1 });
+    txns = (await call('GET', '/api/state')).data.transactions;
+    expect(txns.map((t) => t.sourceId)).toEqual(['tx_3']);
+  });
+
+  it('refuses nonsense lines and a missing import id', async () => {
+    await signIn();
+    expect((await call('POST', '/api/import/bank', { account: 'Monzo', lines })).status).toBe(400);
+    const r = await call('POST', '/api/import/bank', { importId: 'import-bad-1', kind: 'bank', account: 'Barclays', lines: [{ sourceId: 'x', date: 'soon', amountPence: 5 }, { sourceId: 'y', date: thisYear(), amountPence: -5 }] });
+    expect(r.data).toMatchObject({ added: 0, unreadable: 2 });
+  });
+
+  it('downloads a file to edit with an ID on every row', async () => {
+    await signIn();
+    await call('POST', '/api/import/bank', { importId: 'import-monzo-3', account: 'Monzo', kind: 'monzo', lines });
+    const r = await call('GET', '/api/export-edit.csv?year=all');
+    expect(r.res.headers.get('content-disposition')).toContain('honey-all-to-edit.csv');
+    const body = String(r.data).replace(/^﻿/, '').trim().split('\r\n');
+    expect(body[0]).toMatch(/^Honey ID/);
+    expect(body).toHaveLength(4);
+    expect(body.slice(1).every((l) => l.startsWith('h-'))).toBe(true);
+  });
+});

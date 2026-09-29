@@ -9,6 +9,7 @@ import { api } from '../api';
 import type { BusinessProfile, Stream } from '../../core/types';
 import type { App } from '../useApp';
 import { GoogleSection } from './GoogleSection';
+import { SpreadsheetSection } from './SpreadsheetSection';
 
 const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'];
 
@@ -19,6 +20,7 @@ export function SettingsView({ app }: { app: App }) {
       <Title>Settings</Title>
       <ProfileSection app={app} />
       <StreamsSection app={app} />
+      <SpreadsheetSection app={app} />
       <ConnectionsSection app={app} />
       <GoogleSection app={app} />
       <RulesSection app={app} />
@@ -309,7 +311,7 @@ function ImportSection({ app }: { app: App }) {
           </Button>
         )}
         <Label>Export</Label>
-        <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV from the Tax tab.</div>
+        <div style={{ fontSize: 12, color: T.textMuted }}>Each year’s ledger downloads as CSV for an accountant from the Tax tab. To edit in a spreadsheet and bring it back, see “Spreadsheet & other banks” above.</div>
       </Card>
     </Section>
   );

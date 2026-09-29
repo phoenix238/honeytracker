@@ -3,7 +3,7 @@ import { starlingTokens, listAccounts, fetchLines, type BankLine } from './starl
 import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
-import type { Invoice, Settings, Transaction } from '../src/core/types.js';
+import type { Invoice, Rule, Settings, Transaction } from '../src/core/types.js';
 import { invoiceForPayment } from '../src/core/invoices.js';
 
 // Pull everything new into the ledger. Safe to run any number of times: every row is keyed
@@ -76,6 +76,12 @@ export async function syncStarling(repo: Repo, result: SyncResult, fetchImpl: ty
     }
   }
   await repo.setKv('starling:watermarks', watermark);
+}
+
+/** Run a new row through your rules, as the bank feed does. Rows already decided are left as they are. */
+export function applyRules(rules: readonly Rule[], row: NewTransaction): { row: NewTransaction; ruled: boolean } {
+  const rule = row.bucket === 'unreviewed' ? findRule(rules, row) : null;
+  return rule ? { row: stripIds(applyRule(rule, withIds(row))), ruled: true } : { row, ruled: false };
 }
 
 function withIds(row: NewTransaction): Transaction {
