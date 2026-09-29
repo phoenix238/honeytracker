@@ -18,12 +18,12 @@ export interface CategoryInfo {
 }
 
 export const CATEGORIES: readonly CategoryInfo[] = [
-  { key: 'premisesRunningCosts', label: 'Rent, rates, power & insurance', box: 21, hint: 'Room hire, clinic rent, professional insurance, use-of-home costs' },
-  { key: 'carVanTravelExpenses', label: 'Car, van & travel', box: 20, hint: 'Train/bus/taxi to work sites, mileage, parking, meals while travelling' },
+  { key: 'premisesRunningCosts', label: 'Rent, rates, power & insurance', box: 21, hint: 'Room hire, clinic rent, insurance on the premises, use-of-home costs' },
+  { key: 'carVanTravelExpenses', label: 'Car, van & travel', box: 20, hint: 'Between clinics in a day, home visits, trips to training; mileage, parking. Not your regular trip to the same room (that’s commuting); meals only on overnight trips' },
   { key: 'adminCosts', label: 'Phone, stationery & office', box: 23, hint: 'Phone, broadband, software, subscriptions, postage, printing' },
   { key: 'advertisingCosts', label: 'Advertising & marketing', box: 24, hint: 'Website, directory listings, ads, business cards' },
-  { key: 'professionalFees', label: 'Accountancy, legal & professional', box: 28, hint: 'Accountant, solicitor, professional body membership' },
-  { key: 'otherExpenses', label: 'Other business expenses', box: 30, hint: 'Training/CPD, supervision, equipment (cash basis), anything else wholly for the business' },
+  { key: 'professionalFees', label: 'Accountancy, legal & professional', box: 28, hint: 'Accountant, solicitor, professional indemnity insurance' },
+  { key: 'otherExpenses', label: 'Other business expenses', box: 30, hint: 'CPD that keeps your skills current, supervision, professional body membership, journals, equipment (cash basis), anything else wholly for the business' },
   { key: 'costOfGoods', label: 'Goods bought for resale / used', box: 17, hint: 'Stock, materials used up in the work' },
   { key: 'maintenanceCosts', label: 'Repairs & maintenance', box: 22, hint: 'Fixing equipment or business premises' },
   { key: 'financeCharges', label: 'Bank & card charges', box: 26, hint: 'Account fees, card-reader fees, PayPal/Stripe fees' },
@@ -81,7 +81,8 @@ export const LEGACY_CATEGORY_MAP: Record<string, ExpenseCategory> = {
   marketing: 'advertisingCosts',
   advertising: 'advertisingCosts',
   professional: 'professionalFees',
-  insurance: 'premisesRunningCosts',
+  // In the old app this meant professional (indemnity) insurance, which SA103F puts with professional fees.
+  insurance: 'professionalFees',
   rent: 'premisesRunningCosts',
   other: 'otherExpenses',
 };
