@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError, type AppState, type Classification } from './api';
+import { api, ApiError, type AppState, type BatchItem, type BatchResult, type Classification } from './api';
 import { outbox, type OutboxItem } from './outbox';
 import { prepareFile } from './image';
 import { mkId } from '../core/id';
@@ -28,6 +28,14 @@ export interface App {
   sync: () => Promise<void>;
   classify: (id: string, patch: Classification) => Promise<Transaction | null>;
   classifyMany: (ids: string[], patch: Classification) => Promise<void>;
+  /**
+   * Save a group of decisions as one undoable batch. Unlike the other actions it doesn't hold up
+   * the rest of the app while it saves, and it throws on failure: the sort deck puts the card
+   * back and says why.
+   */
+  saveBatch: (b: { batchId: string; items: BatchItem[]; rule?: Omit<Rule, 'id' | 'createdAt'> | null }) => Promise<BatchResult>;
+  /** Put a batch back as it was. Rows changed since stay as they are. */
+  undoBatch: (batchId: string) => Promise<{ undone: number; kept: number; ruleRemoved: boolean } | null>;
   addTransaction: (t: Parameters<typeof api.addTransaction>[0]) => Promise<void>;
   deleteTransaction: (id: string) => Promise<void>;
   saveStream: (s: Partial<Stream> & { name: string }) => Promise<Stream | null>;
@@ -48,6 +56,11 @@ export interface App {
   aiSortAll: () => Promise<void>;
   /** Rewind everything the AI sorted that you haven't changed by hand. */
   aiUndo: () => Promise<void>;
+}
+
+/** The server replaces a rule for the same payee, so the app drops its old copy too. */
+function sameRule(a: Rule, b: Rule): boolean {
+  return a.field === b.field && a.direction === b.direction && a.pattern.toLowerCase() === b.pattern.toLowerCase();
 }
 
 function app_unreviewed(d: AppState | null): number {
@@ -199,6 +212,29 @@ export function useApp(): App {
     classifyMany: async (ids, patch) => {
       const ts = await run(() => api.classifyMany(ids, patch));
       if (ts) setData((d) => (d ? { ...d, transactions: d.transactions.map((x) => ts.find((t) => t.id === x.id) ?? x) } : d));
+    },
+    saveBatch: async (b) => {
+      try {
+        const res = await api.saveBatch(b);
+        // A row changed elsewhere meanwhile was left alone; fetch it fresh so it isn't offered stale.
+        if (res.skipped.some((x) => x.reason !== 'yours')) {
+          await reload();
+          return res;
+        }
+        const byId = new Map(res.updated.map((t) => [t.id, t]));
+        setData((d) =>
+          d ? { ...d, transactions: d.transactions.map((x) => byId.get(x.id) ?? x), rules: res.rule ? [...d.rules.filter((r) => !sameRule(r, res.rule!)), res.rule] : d.rules } : d,
+        );
+        return res;
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) setPhase('signin');
+        throw e;
+      }
+    },
+    undoBatch: async (batchId) => {
+      const res = await run(() => api.undoBatch(batchId));
+      if (res) await reload();
+      return res;
     },
     addTransaction: async (t) => {
       const created = await run(() => api.addTransaction(t));

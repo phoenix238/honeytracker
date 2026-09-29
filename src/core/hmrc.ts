@@ -35,6 +35,22 @@ export const CATEGORIES: readonly CategoryInfo[] = [
   { key: 'depreciation', label: 'Depreciation', box: 29, hint: 'Not deductible — equipment is claimed in full on the cash basis instead', disallowable: true },
 ];
 
+/**
+ * The handful of categories a one-person practice actually uses, as one-tap chips on the sort
+ * card — the full list is a tap further away. Each is a different HMRC category, so a chip never
+ * hides a choice between two boxes.
+ */
+export const QUICK_CATEGORIES: readonly { key: ExpenseCategory; label: string; icon: string }[] = [
+  { key: 'premisesRunningCosts', label: 'Room hire & rent', icon: '🏠' },
+  { key: 'carVanTravelExpenses', label: 'Travel', icon: '🚆' },
+  { key: 'adminCosts', label: 'Phone & software', icon: '📱' },
+  { key: 'otherExpenses', label: 'Training & other', icon: '🎓' },
+  { key: 'professionalFees', label: 'Insurance & accountant', icon: '🛡️' },
+  { key: 'advertisingCosts', label: 'Marketing', icon: '📣' },
+  { key: 'financeCharges', label: 'Bank & card fees', icon: '🏦' },
+  { key: 'costOfGoods', label: 'Supplies used up', icon: '🧴' },
+];
+
 const BY_KEY = new Map(CATEGORIES.map((c) => [c.key, c]));
 
 export function categoryInfo(key: ExpenseCategory): CategoryInfo {

@@ -62,6 +62,23 @@ export interface AppState {
 
 export type Classification = Partial<Pick<Transaction, 'bucket' | 'streamId' | 'category' | 'businessPercent' | 'note'>>;
 
+/** One row of a batch: the decision, and the version of the row it was made against. */
+export interface BatchItem {
+  id: string;
+  patch: Classification;
+  expectUpdatedAt?: string;
+  /** Leave the row alone if you'd already sorted it yourself (used for "similar" rows). */
+  unlessYours?: boolean;
+}
+
+export interface BatchResult {
+  batchId: string;
+  updated: Transaction[];
+  skipped: { id: string; reason: 'not found' | 'changed since' | 'yours' }[];
+  ruleId: string | null;
+  rule: Rule | null;
+}
+
 export const api = {
   login: (password: string) => call<{ ok: true }>('POST', '/api/login', { password }),
   logout: () => call<{ ok: true }>('POST', '/api/logout', {}),
@@ -71,6 +88,9 @@ export const api = {
   classify: (id: string, patch: Classification & { date?: string; amountPence?: number; counterparty?: string }) =>
     call<Transaction>('PATCH', `/api/transactions/${id}`, patch),
   classifyMany: (ids: string[], patch: Classification) => call<Transaction[]>('POST', '/api/transactions/bulk', { ids, patch }),
+  saveBatch: (b: { batchId: string; items: BatchItem[]; rule?: Omit<Rule, 'id' | 'createdAt'> | null }) =>
+    call<BatchResult>('POST', '/api/transactions/batch', b),
+  undoBatch: (batchId: string) => call<{ undone: number; kept: number; ruleRemoved: boolean }>('POST', `/api/batches/${batchId}/undo`, {}),
   addTransaction: (t: { date: string; amountPence: number; direction: 'in' | 'out'; counterparty: string; cstlBookingId?: string } & Classification) =>
     call<Transaction>('POST', '/api/transactions', t),
   deleteTransaction: (id: string) => call<{ ok: true }>('DELETE', `/api/transactions/${id}`),

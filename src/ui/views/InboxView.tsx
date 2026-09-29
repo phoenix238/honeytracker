@@ -9,10 +9,10 @@ import { api } from '../api';
 import type { Transaction } from '../../core/types';
 import type { App } from '../useApp';
 
-// Every movement of money, and the review queue. The goal each week: this list's "To review"
-// filter empty. Then the year-end return is already done.
+// Every movement of money. Sorting happens in the swipe deck; this is where you look things up,
+// see the totals, and find what you swiped away ("Not business") to put it back.
 
-type Filter = 'review' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
+type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'ai' | 'old' | 'receipts' | 'auto' | 'all';
 
 const fromOldApp = (t: Transaction) => t.source === 'import' || Boolean(t.meta.importedFrom);
 const isBusiness = (t: Transaction) => t.bucket === 'business_income' || t.bucket === 'business_expense';
@@ -20,14 +20,13 @@ const isBusiness = (t: Transaction) => t.bucket === 'business_income' || t.bucke
 // Least certain first, so the ones worth a real look come to the top.
 const CONF: Record<string, number> = { low: 0, medium: 1, high: 2 };
 
-export function InboxView({ app }: { app: App }) {
+export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; toSort: number }) {
   const data = app.data!;
   const currentYear = taxYearOf(data.today);
   const [filter, setFilter] = useState<Filter>('review');
   const [year, setYear] = useState<number | 'all'>(currentYear);
   const [q, setQ] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
-  const [reviewing, setReviewing] = useState(false);
   const streams = new Map(data.streams.map((s) => [s.id, s]));
 
   const rows = useMemo(() => {
@@ -36,6 +35,9 @@ export function InboxView({ app }: { app: App }) {
     return data.transactions.filter((t) => {
       if (bounds && !withinBounds(t.date, bounds)) return false;
       if (filter === 'review' && t.bucket !== 'unreviewed') return false;
+      if (filter === 'income' && t.bucket !== 'business_income') return false;
+      if (filter === 'costs' && t.bucket !== 'business_expense') return false;
+      if (filter === 'notbusiness' && t.bucket !== 'personal' && t.bucket !== 'transfer') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
       if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
       if (filter === 'old' && !fromOldApp(t)) return false;
@@ -57,7 +59,12 @@ export function InboxView({ app }: { app: App }) {
   const oldIncome = oldRows.filter((t) => t.direction === 'in');
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
-  const unreviewed = data.transactions.filter((t) => t.bucket === 'unreviewed');
+  // What the list adds up to, where a total means something.
+  const total =
+    filter === 'income' ? { label: 'Business income', pence: rows.reduce((a, t) => a + (t.direction === 'in' ? t.amountPence : -t.amountPence), 0) }
+    : filter === 'costs' ? { label: 'Business costs', pence: rows.reduce((a, t) => a + (t.direction === 'out' ? t.amountPence : -t.amountPence), 0) }
+    : filter === 'notbusiness' ? { label: 'Not counted', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
+    : null;
   // What the AI will look at: unsorted lines, plus business lines still missing a stream.
   const aiQueue = data.transactions.filter(
     (t) =>
@@ -67,17 +74,6 @@ export function InboxView({ app }: { app: App }) {
       (t.bucket === 'unreviewed' || ((t.bucket === 'business_income' || t.bucket === 'business_expense') && (!t.streamId || t.meta.aiRestream === '1'))),
   ).length;
 
-  const nextUnreviewed = () => {
-    // The row just saved has left the queue; move to the next one still in it.
-    const remaining = app.data!.transactions.filter((t) => t.bucket === 'unreviewed' && t.id !== openId);
-    if (remaining.length) setOpenId(remaining[0]!.id);
-    else {
-      setOpenId(null);
-      setReviewing(false);
-      app.notify('Inbox clear.');
-    }
-  };
-
   const years = [...new Set(data.transactions.map((t) => taxYearOf(t.date)))].sort((a, b) => b - a);
   if (!years.includes(currentYear)) years.unshift(currentYear);
 
@@ -85,15 +81,9 @@ export function InboxView({ app }: { app: App }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <Title>Money</Title>
 
-      {unreviewed.length > 0 && (
-        <Button
-          tone="primary"
-          onClick={() => {
-            setReviewing(true);
-            setOpenId(unreviewed[0]!.id);
-          }}
-        >
-          Review {unreviewed.length} waiting
+      {toSort > 0 && (
+        <Button tone="primary" onClick={sort}>
+          Sort {toSort} — one at a time
         </Button>
       )}
 
@@ -198,7 +188,10 @@ export function InboxView({ app }: { app: App }) {
       )}
 
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
-        <Chip active={filter === 'review'} onClick={() => setFilter('review')}>To review</Chip>
+        <Chip active={filter === 'review'} onClick={() => setFilter('review')}>To sort</Chip>
+        <Chip active={filter === 'income'} color={T.green} onClick={() => setFilter('income')}>Income</Chip>
+        <Chip active={filter === 'costs'} color={T.expense} onClick={() => setFilter('costs')}>Costs</Chip>
+        <Chip active={filter === 'notbusiness'} color={T.textMuted} onClick={() => setFilter('notbusiness')}>Not business</Chip>
         {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
         {data.transactions.some(fromOldApp) && <Chip active={filter === 'old'} onClick={() => setFilter('old')}>Old app</Chip>}
         <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
@@ -215,9 +208,21 @@ export function InboxView({ app }: { app: App }) {
         <input style={inputStyle} placeholder="Search name, reference, amount" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
+      {total && rows.length > 0 && (
+        <div style={{ background: T.text, color: T.bg, borderRadius: 12, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+          <span style={{ fontWeight: 700, fontSize: 14 }}>{total.label} · {rows.length}</span>
+          <Money pence={total.pence} color={T.bg} size={16} />
+        </div>
+      )}
+      {filter === 'notbusiness' && rows.length > 0 && (
+        <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+          What you swiped away. Nothing is deleted — tap one and “Put back to sort” if it was business after all.
+        </div>
+      )}
+
       {rows.length === 0 ? (
         <Empty>
-          {filter === 'review' ? 'Nothing waiting. Every line is sorted.' : filter === 'receipts' ? 'Every business cost has its receipt.' : 'No transactions here.'}
+          {filter === 'review' ? 'Nothing waiting. Every line is sorted.' : filter === 'receipts' ? 'Every business cost has its receipt.' : filter === 'notbusiness' ? 'Nothing swiped away yet.' : 'No transactions here.'}
           {!data.config.starling && filter !== 'receipts' && (
             <>
               <br />
@@ -234,15 +239,7 @@ export function InboxView({ app }: { app: App }) {
         </div>
       )}
 
-      <TransactionSheet
-        app={app}
-        txn={open}
-        onClose={() => {
-          setOpenId(null);
-          setReviewing(false);
-        }}
-        onNext={reviewing ? nextUnreviewed : undefined}
-      />
+      <TransactionSheet app={app} txn={open} onClose={() => setOpenId(null)} />
     </div>
   );
 }
@@ -258,9 +255,8 @@ function Row({ t, streamName, onOpen }: { t: Transaction; streamName?: string; o
     <button
       type="button"
       onClick={onOpen}
-      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 2px', background: 'none', border: 'none', borderBottom: `1px solid ${T.border}`, textAlign: 'left', cursor: 'pointer', color: T.text, width: '100%' }}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 2px 12px 10px', background: 'none', border: 'none', borderLeft: `3px solid ${BUCKET_COLOR[t.bucket]}`, borderBottom: `1px solid ${T.border}`, textAlign: 'left', cursor: 'pointer', color: T.text, width: '100%' }}
     >
-      <span style={{ width: 8, height: 8, borderRadius: 4, background: BUCKET_COLOR[t.bucket], flexShrink: 0 }} />
       <span style={{ flex: 1, minWidth: 0 }}>
         <span style={{ display: 'block', fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {t.counterparty || t.reference || '—'}

@@ -11,7 +11,7 @@ import type { View } from '../Shell';
 // The one-glance answer: how much should be in the tax pot right now, what HMRC wants next
 // and when, and what's left to tidy.
 
-export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
+export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) => void; sort: () => void; toSort: number }) {
   const data = app.data!;
   const p = app.picture!;
   const fileRef = useRef<HTMLInputElement>(null);
@@ -19,7 +19,6 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
   const next = p.upcoming[0];
   const nextDateTotal = next ? p.upcoming.filter((x) => x.due === next.due).reduce((a, x) => a + x.amountPence, 0) : 0;
-  const todo = p.review.unreviewed + p.review.missingReceipts + p.review.noStream + p.review.aiToCheck;
   const owed = owedSummary(data.invoices, data.today);
   const storageUsed = data.storage.limitBytes ? data.storage.usedBytes / data.storage.limitBytes : 0;
 
@@ -40,6 +39,10 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
           {p.estimate.lowConfidence ? '. Early in the year — add your expected profit in Tax for a steadier figure.' : '.'}
         </div>
       </Card>
+
+      <Button tone={toSort ? 'primary' : 'quiet'} onClick={toSort ? sort : () => go('inbox')} style={{ borderRadius: 999, padding: '13px 18px', fontSize: 15 }}>
+        {toSort ? `${toSort} to sort — swipe through them` : '✓ Everything’s sorted'}
+      </Button>
 
       {next && (
         <Card onClick={() => go('tax')}>
@@ -96,14 +99,11 @@ export function HomeView({ app, go }: { app: App; go: (v: View) => void }) {
         }}
       />
 
-      {todo > 0 && (
+      {p.review.missingReceipts > 0 && (
         <Card onClick={() => go('inbox')} style={{ borderColor: T.accentBright + '66' }}>
-          <Label color={T.accentBright}>To tidy</Label>
+          <Label color={T.accentBright}>Receipts to find</Label>
           <div style={{ fontSize: 14, color: T.text, marginTop: 6, lineHeight: 1.7 }}>
-            {p.review.unreviewed > 0 && <div>{p.review.unreviewed} bank line{p.review.unreviewed === 1 ? '' : 's'} to classify</div>}
-            {p.review.aiToCheck > 0 && <div>{p.review.aiToCheck} AI-sorted line{p.review.aiToCheck === 1 ? '' : 's'} to check</div>}
-            {p.review.missingReceipts > 0 && <div>{p.review.missingReceipts} business cost{p.review.missingReceipts === 1 ? '' : 's'} without a receipt</div>}
-            {p.review.noStream > 0 && <div>{p.review.noStream} business line{p.review.noStream === 1 ? '' : 's'} with no stream</div>}
+            {p.review.missingReceipts} business cost{p.review.missingReceipts === 1 ? '' : 's'} without a receipt
           </div>
         </Card>
       )}

@@ -7,6 +7,8 @@ import { ReceiptsView } from './views/ReceiptsView';
 import { TaxView } from './views/TaxView';
 import { SettingsView } from './views/SettingsView';
 import { InvoicesView } from './views/InvoicesView';
+import { SortDeck } from './SortDeck';
+import { needsDecision } from '../core/sortQueue';
 import type { App } from './useApp';
 
 export type View = 'home' | 'inbox' | 'invoices' | 'receipts' | 'tax' | 'settings';
@@ -22,7 +24,12 @@ const TABS: { id: View; label: string; icon: (p: { size?: number; color?: string
 
 export function Shell({ app }: { app: App }) {
   const [view, setView] = useState<View>('home');
-  const badge = app.picture?.review.unreviewed ?? 0;
+  const [sorting, setSorting] = useState(false);
+  // One count everywhere: every row still waiting for you, whatever the tax year.
+  const hasStreams = Boolean(app.data?.streams.some((s) => !s.archived));
+  const toSort = app.data ? app.data.transactions.filter((t) => needsDecision(t, hasStreams)).length : 0;
+  const badge = toSort;
+  const sort = () => setSorting(true);
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg }}>
@@ -52,8 +59,8 @@ export function Shell({ app }: { app: App }) {
           </div>
         )}
 
-        {view === 'home' && <HomeView app={app} go={setView} />}
-        {view === 'inbox' && <InboxView app={app} />}
+        {view === 'home' && <HomeView app={app} go={setView} sort={sort} toSort={toSort} />}
+        {view === 'inbox' && <InboxView app={app} sort={sort} toSort={toSort} />}
         {view === 'invoices' && <InvoicesView app={app} />}
         {view === 'receipts' && <ReceiptsView app={app} />}
         {view === 'tax' && <TaxView app={app} />}
@@ -82,6 +89,7 @@ export function Shell({ app }: { app: App }) {
           );
         })}
       </nav>
+      {sorting && app.data && <SortDeck app={app} onClose={() => setSorting(false)} />}
     </div>
   );
 }

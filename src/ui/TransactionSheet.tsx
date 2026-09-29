@@ -226,6 +226,21 @@ export function TransactionSheet({
         </Button>
       </div>
 
+      {(txn.bucket === 'personal' || txn.bucket === 'transfer') && (
+        <Button
+          onClick={async () => {
+            const saved = await app.classify(txn.id, { bucket: 'unreviewed' });
+            if (saved) {
+              app.notify('Put back — it’s waiting in the sort pile.');
+              onClose();
+            }
+          }}
+          disabled={app.busy}
+        >
+          ↩︎ Put back to sort
+        </Button>
+      )}
+
       <div style={{ display: 'flex', gap: 8 }}>
         <Button tone="primary" onClick={save} disabled={app.busy} style={{ flex: 1 }}>
           {onNext ? 'Save & next' : 'Save'}
