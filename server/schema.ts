@@ -85,6 +85,10 @@ export const SCHEMA: string[] = [
     detail jsonb NOT NULL DEFAULT '{}'::jsonb
   )`,
   `CREATE INDEX IF NOT EXISTS audit_log_txn ON audit_log (transaction_id)`,
+  // Changes made together — one swipe that also sorted the similar rows, a spreadsheet brought
+  // back in — share a batch id, so the whole group can be undone in one go.
+  `ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS batch_id text`,
+  `CREATE INDEX IF NOT EXISTS audit_log_batch ON audit_log (batch_id) WHERE batch_id IS NOT NULL`,
   // Invoices are documents; the money they bring in lives in transactions, linked here.
   `CREATE TABLE IF NOT EXISTS invoices (
     id text PRIMARY KEY,

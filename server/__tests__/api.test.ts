@@ -692,3 +692,116 @@ describe('Google receipt finder', () => {
     expect((await call('GET', '/api/state', undefined, { Authorization: `Bearer ${token}` })).status).toBe(401);
   });
 });
+
+describe('sorting in batches, and undo', () => {
+  async function setup() {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    feed.push(item('c1', 60, 'IN', daysAgo(9), { counterPartyName: 'LARA BLIGH', reference: 'Thanks' }));
+    feed.push(item('c2', 60, 'IN', daysAgo(5), { counterPartyName: 'Lara Bligh', reference: 'Session' }));
+    feed.push(item('c3', 60, 'IN', daysAgo(2), { counterPartyName: 'LARA BLIGH', reference: 'x' }));
+    feed.push(item('t1', 8.4, 'OUT', daysAgo(3), { counterPartyName: 'TFL TRAVEL CH 1234', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    const txns: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    const by = (uid: string) => txns.find((t) => t.sourceId === uid)!;
+    return { stream, by };
+  }
+
+  it('saves a swipe and its similar rows as one batch, with a rule for new ones, and undoes all of it', async () => {
+    const { stream, by } = await setup();
+    const rows = [by('c1'), by('c2'), by('c3')];
+    const patch = { bucket: 'business_income', streamId: stream.id };
+    const saved = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-lara-1',
+      items: rows.map((t, i) => ({ id: t.id, patch, expectUpdatedAt: t.updatedAt, unlessYours: i > 0 })),
+      rule: { field: 'counterparty', pattern: 'lara bligh', direction: 'in', bucket: 'business_income', streamId: stream.id },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.data.updated).toHaveLength(3);
+    expect(saved.data.updated.every((t: Transaction) => t.bucket === 'business_income' && t.classifiedBy === 'user' && t.streamId === stream.id)).toBe(true);
+    expect(saved.data.rule).toMatchObject({ pattern: 'lara bligh', bucket: 'business_income' });
+
+    // A hand edit afterwards makes that row yours; undo leaves it alone.
+    await call('PATCH', `/api/transactions/${by('c3').id}`, { note: 'paid for two' });
+    await call('PATCH', `/api/transactions/${by('c3').id}`, { bucket: 'personal' });
+
+    const undo = await call('POST', '/api/batches/batch-lara-1/undo', {});
+    expect(undo.data).toEqual({ undone: 2, kept: 1, ruleRemoved: true });
+    const after: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    const now = (uid: string) => after.find((t) => t.sourceId === uid)!;
+    expect(now('c1')).toMatchObject({ bucket: 'unreviewed', streamId: null, classifiedBy: null });
+    expect(now('c2')).toMatchObject({ bucket: 'unreviewed', classifiedBy: null });
+    expect(now('c3').bucket).toBe('personal');
+    expect((await call('GET', '/api/state')).data.rules).toHaveLength(0);
+    // Undo is once only.
+    expect((await call('POST', '/api/batches/batch-lara-1/undo', {})).status).toBe(409);
+    expect((await call('POST', '/api/batches/no-such-batch/undo', {})).status).toBe(404);
+  });
+
+  it('a newer rule for the same payee replaces the old one, and undo brings the old one back', async () => {
+    const { stream, by } = await setup();
+    const rule = { field: 'counterparty', pattern: 'lara bligh', direction: 'in' };
+    await call('POST', '/api/transactions/batch', { batchId: 'batch-r-1', items: [{ id: by('c1').id, patch: { bucket: 'personal' } }], rule: { ...rule, bucket: 'personal' } });
+    await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-r-2',
+      items: [{ id: by('c2').id, patch: { bucket: 'business_income', streamId: stream.id } }],
+      rule: { ...rule, pattern: 'LARA BLIGH', bucket: 'business_income', streamId: stream.id },
+    });
+    let rules = (await call('GET', '/api/state')).data.rules;
+    expect(rules.map((x: { bucket: string }) => x.bucket)).toEqual(['business_income']);
+    await call('POST', '/api/batches/batch-r-2/undo', {});
+    rules = (await call('GET', '/api/state')).data.rules;
+    expect(rules.map((x: { bucket: string }) => x.bucket)).toEqual(['personal']);
+  });
+
+  it('never overwrites a row changed since, or one you had already sorted yourself', async () => {
+    const { stream, by } = await setup();
+    const c1 = by('c1');
+    await call('PATCH', `/api/transactions/${by('c2').id}`, { bucket: 'personal' }); // yours
+    const res = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-guard-1',
+      items: [
+        { id: c1.id, patch: { bucket: 'business_income', streamId: stream.id }, expectUpdatedAt: '2000-01-01T00:00:00.000Z' },
+        { id: by('c2').id, patch: { bucket: 'business_income', streamId: stream.id }, unlessYours: true },
+        { id: 'nope', patch: { bucket: 'personal' } },
+      ],
+    });
+    expect(res.data.updated).toHaveLength(0);
+    expect(res.data.skipped.map((x: { reason: string }) => x.reason)).toEqual(['changed since', 'yours', 'not found']);
+  });
+
+  it('checks every row before writing any', async () => {
+    const { by } = await setup();
+    const res = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-bad-1',
+      items: [{ id: by('c1').id, patch: { bucket: 'personal' } }, { id: by('c2').id, patch: { bucket: 'free money' } }],
+    });
+    expect(res.status).toBe(400);
+    const after: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    expect(after.find((t) => t.sourceId === 'c1')!.bucket).toBe('unreviewed');
+    expect((await call('POST', '/api/transactions/batch', { batchId: 'x', items: [] })).status).toBe(400);
+  });
+
+  it('putting a row back to sort makes it no one’s again', async () => {
+    const { by } = await setup();
+    const t = by('t1');
+    await call('PATCH', `/api/transactions/${t.id}`, { bucket: 'personal' });
+    const back = await call('PATCH', `/api/transactions/${t.id}`, { bucket: 'unreviewed' });
+    expect(back.data).toMatchObject({ bucket: 'unreviewed', classifiedBy: null });
+  });
+
+  it('a receipt matched to a row gives it the only stream there is', async () => {
+    const { stream, by } = await setup();
+    const t = by('t1');
+    // The sync made a CSTL stream too; archive it so Practice is the only one in use.
+    for (const st of (await call('GET', '/api/state')).data.streams) {
+      if (st.id !== stream.id) await call('POST', '/api/streams', { ...st, archived: true });
+    }
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    aiReply = () => ({ merchant: 'TfL', date: t.date, totalPence: 840, vatPence: null, category: 'carVanTravelExpenses', description: 'Oyster fare', isReceipt: true });
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
+    await call('POST', '/api/receipts', { filename: 'tfl.png', mime: 'image/png', dataBase64: png, transactionId: t.id });
+    const after = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === t.id);
+    expect(after).toMatchObject({ bucket: 'business_expense', streamId: stream.id, category: 'carVanTravelExpenses' });
+  });
+});

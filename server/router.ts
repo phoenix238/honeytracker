@@ -12,10 +12,11 @@ import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
+import { planBatchUndo } from './batchUndo.js';
 import { linkInvoicePayment } from './sync.js';
 import { isCategory } from '../src/core/hmrc.js';
 import { taxYearBounds, taxYearOf, today, withinBounds } from '../src/core/dates.js';
-import type { Bucket, BusinessProfile, Direction, Invoice, InvoiceLine, Settings, Stream, TaxYearFacts, Transaction } from '../src/core/types.js';
+import type { Bucket, BusinessProfile, Direction, Invoice, InvoiceLine, Rule, Settings, Stream, TaxYearFacts, Transaction } from '../src/core/types.js';
 import { DEFAULT_PROFILE } from '../src/core/types.js';
 import { addDays } from '../src/core/dates.js';
 
@@ -78,6 +79,31 @@ function classification(b: Record<string, unknown>, current?: Transaction) {
   }
   if (bucket === 'business_expense' && !(patch.category ?? current?.category)) patch.category = 'otherExpenses';
   return patch;
+}
+
+/**
+ * Who a saved decision belongs to: you — unless you've put the row back to be sorted, when it
+ * belongs to no one again, so the AI and the sort deck both offer it afresh.
+ */
+function decidedBy(bucket: Bucket | undefined): Pick<Transaction, 'classifiedBy'> & { meta?: Record<string, string> } {
+  return bucket === 'unreviewed' ? { classifiedBy: null, meta: { aiTried: '', aiReason: '', aiConfidence: '' } } : { classifiedBy: 'user' };
+}
+
+/** A rule from the app, checked. Throws before anything is written if it doesn't make sense. */
+function ruleFrom(b: Record<string, unknown>): Omit<Rule, 'id' | 'createdAt'> {
+  const pattern = str(b.pattern, 120).trim();
+  if (pattern.length < 2) throw new HttpError(400, 'Pattern is too short');
+  const cls = classification({ bucket: b.bucket, streamId: b.streamId ?? null, category: b.category ?? null, businessPercent: b.businessPercent ?? 100 });
+  if (!cls.bucket || cls.bucket === 'unreviewed') throw new HttpError(400, 'Pick what it should become');
+  return {
+    field: b.field === 'reference' ? 'reference' : 'counterparty',
+    pattern,
+    direction: b.direction === 'in' || b.direction === 'out' ? b.direction : null,
+    bucket: cls.bucket,
+    streamId: cls.streamId ?? null,
+    category: cls.category ?? null,
+    businessPercent: cls.businessPercent ?? 100,
+  };
 }
 
 async function dropCstlOther(r: Repo, bookingId: string): Promise<void> {
@@ -198,8 +224,59 @@ const routes: [string, RegExp, Handler][] = [
       if (b.amountPence !== undefined) extra.amountPence = pence(b.amountPence);
       if (b.counterparty !== undefined) extra.counterparty = str(b.counterparty, 200);
     }
-    const updated = await r.updateTransaction(id!, { ...patch, ...extra, classifiedBy: 'user' });
+    const owner = patch.bucket === 'unreviewed' ? decidedBy('unreviewed') : { classifiedBy: 'user' as const };
+    const updated = await r.updateTransaction(id!, { ...patch, ...extra, ...owner });
     return json(updated);
+  }],
+
+  // Several rows decided together, undoable as one: a swipe that also sorted the similar rows,
+  // or a spreadsheet brought back in. Each item can name the version of the row it was decided
+  // against, so an edit made since is never overwritten; `unlessYours` leaves alone any row you
+  // had already sorted yourself. Everything is checked before anything is written.
+  ['POST', /^\/api\/transactions\/batch$/, async (req, r) => {
+    const b = await body<{ batchId?: unknown; items?: unknown; rule?: Record<string, unknown> | null }>(req);
+    const batchId = str(b.batchId, 64);
+    if (!/^[\w-]{8,64}$/.test(batchId)) throw new HttpError(400, 'Missing batch id');
+    const items = Array.isArray(b.items) ? (b.items as Record<string, unknown>[]).slice(0, 1000) : [];
+    if (!items.length) throw new HttpError(400, 'Nothing to save');
+    const byId = new Map((await r.listTransactions()).map((t) => [t.id, t]));
+    const plan: { current: Transaction; patch: ReturnType<typeof classification> }[] = [];
+    const skipped: { id: string; reason: 'not found' | 'changed since' | 'yours' }[] = [];
+    for (const it of items) {
+      const id = str(it?.id, 64);
+      const current = byId.get(id);
+      if (!current) { skipped.push({ id, reason: 'not found' }); continue; }
+      if (it.expectUpdatedAt !== undefined && str(it.expectUpdatedAt, 40) !== current.updatedAt) { skipped.push({ id, reason: 'changed since' }); continue; }
+      if (it.unlessYours === true && current.classifiedBy === 'user' && current.bucket !== 'unreviewed') { skipped.push({ id, reason: 'yours' }); continue; }
+      plan.push({ current, patch: classification((it.patch ?? {}) as Record<string, unknown>, current) });
+    }
+    const rule = b.rule ? ruleFrom(b.rule) : null;
+    const updated: Transaction[] = [];
+    for (const { current, patch } of plan) {
+      const t = await r.updateTransaction(current.id, { ...patch, ...decidedBy(patch.bucket ?? current.bucket) }, { batchId, existing: current });
+      if (t) updated.push(t);
+    }
+    // "Do the same for new ones": only rows still to come — the ones here were just decided.
+    // A newer decision about the same payee replaces the old rule rather than fighting it.
+    const replaced = rule
+      ? (await r.listRules()).filter((x) => x.field === rule.field && x.direction === rule.direction && x.pattern.toLowerCase() === rule.pattern.toLowerCase())
+      : [];
+    for (const old of replaced) await r.deleteRule(old.id);
+    const saved = rule ? await r.insertRule(rule) : null;
+    if (saved) await r.setKv(`batch:${batchId}:rule`, { ruleId: saved.id, replaced });
+    return json({ batchId, updated, skipped, ruleId: saved?.id ?? null, rule: saved });
+  }],
+  ['POST', /^\/api\/batches\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
+    if (await r.getKv(`batch:${id}:undone`)) throw new HttpError(409, 'That was already undone.');
+    const [updates, made] = await Promise.all([r.batchUpdates(id!), r.getKv<{ ruleId: string; replaced?: Rule[] }>(`batch:${id}:rule`)]);
+    const ruleId = made?.ruleId ?? null;
+    if (!updates.length && !ruleId) throw new HttpError(404, 'Nothing to undo');
+    const { undo, kept } = planBatchUndo(await r.listTransactions(), updates);
+    for (const u of undo) await r.updateTransaction(u.id, u.patch, { batchId: `undo:${id}` });
+    if (ruleId) await r.deleteRule(ruleId);
+    for (const old of made?.replaced ?? []) await r.insertRule(old);
+    await r.setKv(`batch:${id}:undone`, { at: new Date().toISOString() });
+    return json({ undone: undo.length, kept, ruleRemoved: Boolean(ruleId) });
   }],
 
   ['POST', /^\/api\/transactions\/bulk$/, async (req, r) => {
@@ -279,19 +356,7 @@ const routes: [string, RegExp, Handler][] = [
   // ── Rules ─────────────────────────────────────────────────────────────────────────
   ['POST', /^\/api\/rules$/, async (req, r) => {
     const b = await body(req);
-    const pattern = str(b.pattern, 120).trim();
-    if (pattern.length < 2) throw new HttpError(400, 'Pattern is too short');
-    const cls = classification({ bucket: b.bucket, streamId: b.streamId ?? null, category: b.category ?? null, businessPercent: b.businessPercent ?? 100 });
-    if (!cls.bucket || cls.bucket === 'unreviewed') throw new HttpError(400, 'Pick what it should become');
-    const rule = await r.insertRule({
-      field: b.field === 'reference' ? 'reference' : 'counterparty',
-      pattern,
-      direction: b.direction === 'in' || b.direction === 'out' ? b.direction : null,
-      bucket: cls.bucket,
-      streamId: cls.streamId ?? null,
-      category: cls.category ?? null,
-      businessPercent: cls.businessPercent ?? 100,
-    });
+    const rule = await r.insertRule(ruleFrom(b));
     // Apply to everything already waiting in the inbox, too.
     let applied = 0;
     if (b.applyToExisting !== false) {
@@ -386,7 +451,10 @@ const routes: [string, RegExp, Handler][] = [
     if (linkedId) {
       const t = await r.getTransaction(linkedId);
       if (t && t.bucket === 'unreviewed' && receipt.suggestedCategory) {
-        await r.updateTransaction(t.id, { bucket: 'business_expense', category: receipt.suggestedCategory, classifiedBy: 'rule' });
+        // With only one stream there's nothing to ask — without it the row came back as "no stream".
+        const active = (await r.listStreams()).filter((st) => !st.archived);
+        const streamId = active.length === 1 ? active[0]!.id : t.streamId;
+        await r.updateTransaction(t.id, { bucket: 'business_expense', category: receipt.suggestedCategory, streamId, classifiedBy: 'rule' });
       }
     }
     return json({ receipt: await r.getReceipt(receipt.id), matchedTransactionId: linkedId, readError, read: Boolean(extracted) }, 201);

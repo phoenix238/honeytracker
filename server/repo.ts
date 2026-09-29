@@ -164,22 +164,25 @@ export function repo(db: Db) {
     async updateTransaction(
       id: string,
       patch: Partial<Pick<Transaction, 'bucket' | 'streamId' | 'category' | 'businessPercent' | 'note' | 'classifiedBy' | 'meta' | 'date' | 'amountPence' | 'counterparty'>>,
+      /** `existing`: the row as just read, to save re-reading it when many are written at once. */
+      opts: { batchId?: string | null; existing?: Transaction } = {},
     ): Promise<Transaction | null> {
-      const existing = await api.getTransaction(id);
+      const existing = opts.existing ?? (await api.getTransaction(id));
       if (!existing) return null;
       const next = { ...existing, ...patch, meta: { ...existing.meta, ...(patch.meta ?? {}) } };
+      const at = now();
       await db.query(
         `UPDATE transactions SET bucket=$2, stream_id=$3, category=$4, business_percent=$5, note=$6, classified_by=$7,
            meta=$8::jsonb, date=$9, amount_pence=$10, counterparty=$11, updated_at=$12 WHERE id=$1`,
         [id, next.bucket, next.streamId, next.category, next.businessPercent, next.note, next.classifiedBy,
-          JSON.stringify(next.meta), next.date, next.amountPence, next.counterparty, now()],
+          JSON.stringify(next.meta), next.date, next.amountPence, next.counterparty, at],
       );
       const changed: Record<string, unknown> = {};
       for (const k of Object.keys(patch) as (keyof typeof patch)[]) {
         if (JSON.stringify(existing[k]) !== JSON.stringify(next[k])) changed[k] = { from: existing[k], to: next[k] };
       }
-      if (Object.keys(changed).length) await api.audit(id, 'update', changed);
-      return api.getTransaction(id);
+      if (Object.keys(changed).length) await api.audit(id, 'update', changed, opts.batchId ?? null);
+      return opts.existing ? { ...next, updatedAt: at } : api.getTransaction(id);
     },
 
     async deleteTransaction(id: string): Promise<void> {
@@ -187,10 +190,22 @@ export function repo(db: Db) {
       await api.audit(id, 'delete', {});
     },
 
-    async audit(transactionId: string | null, action: string, detail: unknown): Promise<void> {
-      await db.query('INSERT INTO audit_log (at, transaction_id, action, detail) VALUES ($1,$2,$3,$4::jsonb)', [
-        now(), transactionId, action, JSON.stringify(detail ?? {}),
+    async audit(transactionId: string | null, action: string, detail: unknown, batchId: string | null = null): Promise<void> {
+      await db.query('INSERT INTO audit_log (at, transaction_id, action, detail, batch_id) VALUES ($1,$2,$3,$4::jsonb,$5)', [
+        now(), transactionId, action, JSON.stringify(detail ?? {}), batchId,
       ]);
+    },
+
+    /** The changes one batch made, oldest first — what undoing that batch rewinds. */
+    async batchUpdates(batchId: string): Promise<{ transactionId: string; detail: Record<string, { from?: unknown; to?: unknown }> }[]> {
+      const rows = await db.query<Row>(
+        "SELECT transaction_id, detail FROM audit_log WHERE batch_id = $1 AND action = 'update' AND transaction_id IS NOT NULL ORDER BY id",
+        [batchId],
+      );
+      return rows.map((r) => ({
+        transactionId: s(r.transaction_id),
+        detail: (typeof r.detail === 'string' ? JSON.parse(r.detail) : r.detail ?? {}) as Record<string, { from?: unknown; to?: unknown }>,
+      }));
     },
 
     async history(transactionId: string): Promise<{ at: string; action: string; detail: unknown }[]> {
@@ -226,8 +241,8 @@ export function repo(db: Db) {
     async listRules(): Promise<Rule[]> {
       return (await db.query<Row>('SELECT * FROM rules ORDER BY created_at')).map(toRule);
     },
-    async insertRule(r: Omit<Rule, 'id' | 'createdAt'>): Promise<Rule> {
-      const rule: Rule = { ...r, id: mkId(), createdAt: now() };
+    async insertRule(r: Omit<Rule, 'id' | 'createdAt'> & Partial<Pick<Rule, 'id' | 'createdAt'>>): Promise<Rule> {
+      const rule: Rule = { ...r, id: r.id ?? mkId(), createdAt: r.createdAt ?? now() };
       await db.query(
         `INSERT INTO rules (id, field, pattern, direction, bucket, stream_id, category, business_percent, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
