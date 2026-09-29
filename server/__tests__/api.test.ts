@@ -362,6 +362,25 @@ describe('invoices', () => {
     expect(state.transactions[0].meta.invoiceId).toBe('');
   });
 
+  it('offers payments that are a little off, closest first, and links the one you pick', async () => {
+    await signIn();
+    const inv = (await call('POST', '/api/invoices', { clientName: 'Café', lines })).data;
+    await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+    feed.push(item('short-1', 345, 'IN', daysAgo(0), { counterPartyName: 'CAFE' })); // £5 short
+    feed.push(item('other-1', 20, 'IN', daysAgo(0), { counterPartyName: 'SOMEONE' }));
+    await call('POST', '/api/sync', {});
+    expect((await call('GET', '/api/state')).data.invoices[0].paidTransactionId).toBeNull(); // not the exact amount: never automatic
+    const candidates = (await call('GET', `/api/invoices/${inv.id}/candidates`)).data;
+    expect(candidates.map((t: Transaction) => t.sourceId)).toEqual(['short-1', 'other-1']);
+    const paid = await call('POST', `/api/invoices/${inv.id}/pay`, { transactionId: candidates[0].id });
+    expect(paid.data.invoice.paidTransactionId).toBe(candidates[0].id);
+    expect(paid.data.transaction).toMatchObject({ amountPence: 34500, bucket: 'business_income', classifiedBy: 'user' });
+    // Once it settles an invoice it isn't offered for another.
+    const next = (await call('POST', '/api/invoices', { clientName: 'Café', lines })).data;
+    await call('PATCH', `/api/invoices/${next.id}`, { status: 'sent' });
+    expect((await call('GET', `/api/invoices/${next.id}/candidates`)).data.map((t: Transaction) => t.sourceId)).toEqual(['other-1']);
+  });
+
   it('only deletes drafts', async () => {
     await signIn();
     const inv = (await call('POST', '/api/invoices', { clientName: 'X', lines })).data;
@@ -768,6 +787,42 @@ describe('sorting in batches, and undo', () => {
     });
     expect(res.data.updated).toHaveLength(0);
     expect(res.data.skipped.map((x: { reason: string }) => x.reason)).toEqual(['changed since', 'yours', 'not found']);
+  });
+
+  it('a swipe that settles an invoice marks it paid, and undo puts it back to waiting', async () => {
+    const { stream, by } = await setup();
+    const inv = (await call('POST', '/api/invoices', { clientName: 'Lara Bligh', streamId: stream.id, lines: [{ description: 'Session', quantity: 1, unitPence: 6500 }] })).data;
+    await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+    const c1 = by('c1'); // £60 in on a £65 invoice
+    const saved = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-inv-1',
+      items: [{ id: c1.id, patch: { bucket: 'business_income', streamId: stream.id }, payInvoiceId: inv.id }],
+    });
+    expect(saved.data.invoicesPaid).toBe(1);
+    expect(saved.data.updated[0]).toMatchObject({ bucket: 'business_income', meta: { invoiceId: inv.id } });
+    let state = (await call('GET', '/api/state')).data;
+    expect(state.invoices[0].paidTransactionId).toBe(c1.id);
+
+    expect((await call('POST', '/api/batches/batch-inv-1/undo', {})).data.undone).toBe(1);
+    state = (await call('GET', '/api/state')).data;
+    expect(state.invoices[0].paidTransactionId).toBeNull();
+    const back = state.transactions.find((t: Transaction) => t.id === c1.id);
+    expect(back).toMatchObject({ bucket: 'unreviewed', classifiedBy: null, note: '' });
+    expect(back.meta.invoiceId || '').toBe('');
+  });
+
+  it('a swipe never pays an invoice with money going out, or one already paid', async () => {
+    const { stream, by } = await setup();
+    const inv = (await call('POST', '/api/invoices', { clientName: 'X', lines: [{ description: 'S', quantity: 1, unitPence: 6000 }] })).data;
+    await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+    const out = await call('POST', '/api/transactions/batch', {
+      batchId: 'batch-inv-2', items: [{ id: by('t1').id, patch: { bucket: 'business_expense', streamId: stream.id, category: 'carVanTravelExpenses' }, payInvoiceId: inv.id }],
+    });
+    expect(out.data.invoicesPaid).toBe(0);
+    await call('POST', '/api/transactions/batch', { batchId: 'batch-inv-3', items: [{ id: by('c1').id, patch: { bucket: 'business_income' }, payInvoiceId: inv.id }] });
+    const again = await call('POST', '/api/transactions/batch', { batchId: 'batch-inv-4', items: [{ id: by('c2').id, patch: { bucket: 'business_income' }, payInvoiceId: inv.id }] });
+    expect(again.data.invoicesPaid).toBe(0);
+    expect((await call('GET', '/api/state')).data.invoices[0].paidTransactionId).toBe(by('c1').id);
   });
 
   it('checks every row before writing any', async () => {

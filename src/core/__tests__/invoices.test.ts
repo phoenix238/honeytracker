@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, timedDescription } from '../invoices';
+import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, timedDescription, possiblePayments, invoiceGuess } from '../invoices';
 import type { Invoice } from '../types';
 import { txn } from './fixtures';
 
@@ -87,5 +87,30 @@ describe('time on invoices', () => {
   it('writes the line the way a client reads it', () => {
     expect(timedDescription('2026-09-03', '10:00', '13:00', 'Shift')).toBe('Thu 3 Sept, 10:00–13:00 · Shift'.replace('Sept', new Date('2026-09-03T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })));
     expect(timedDescription('2026-09-03', null, null, 'Workshop day')).toMatch(/^Thu 3 Sep\w* · Workshop day$/);
+  });
+});
+
+describe('payments that don’t match exactly', () => {
+  const sent = (over: Partial<Invoice>) => inv({ status: 'sent', ...over });
+  it('lists every payment in that could be it — exact first, then the nearest amounts', () => {
+    const i = sent({ id: 'a', number: 'INV57', issueDate: '2026-09-01', lines: [{ description: 'x', quantity: 1, unitPence: 14513 }] });
+    const exact = txn({ direction: 'in', amountPence: 14513, date: '2026-09-20' });
+    const short = txn({ direction: 'in', amountPence: 14000, date: '2026-09-10' });
+    const far = txn({ direction: 'in', amountPence: 2000, date: '2026-09-05' });
+    const before = txn({ direction: 'in', amountPence: 14513, date: '2026-08-01' });
+    const taken = txn({ direction: 'in', amountPence: 14513, date: '2026-09-12', meta: { invoiceId: 'other' } });
+    const mine = txn({ direction: 'in', amountPence: 14513, date: '2026-09-12', bucket: 'transfer' });
+    expect(possiblePayments(i, [far, short, exact, before, taken, mine]).map((t) => t.id)).toEqual([exact.id, short.id, far.id]);
+  });
+  it('guesses the invoice from the payer’s name or the number — only when there’s one that fits', () => {
+    const caff = sent({ id: 'c', number: 'INV57', clientName: 'Ethical Caff Ltd', lines: [{ description: 'x', quantity: 1, unitPence: 14513 }] });
+    const sam = sent({ id: 's', number: 'INV58', clientName: 'Sam Client', lines: [{ description: 'x', quantity: 1, unitPence: 6000 }] });
+    expect(invoiceGuess(txn({ direction: 'in', amountPence: 14000, counterparty: 'ETHICAL CAFF LIMITED' }), [caff, sam])?.id).toBe('c');
+    expect(invoiceGuess(txn({ direction: 'in', amountPence: 6000, counterparty: 'S CLIENT', reference: 'inv 58' }), [caff, sam])?.id).toBe('s');
+    expect(invoiceGuess(txn({ direction: 'in', amountPence: 6000, counterparty: 'Someone Else' }), [caff, sam])).toBeNull();
+    const caff2 = sent({ id: 'c2', number: 'INV59', clientName: 'Ethical Caff Ltd', lines: [{ description: 'x', quantity: 1, unitPence: 5000 }] });
+    expect(invoiceGuess(txn({ direction: 'in', amountPence: 5000, counterparty: 'ETHICAL CAFF' }), [caff, caff2])?.id).toBe('c2'); // two open: the amount decides
+    expect(invoiceGuess(txn({ direction: 'in', amountPence: 1, counterparty: 'ETHICAL CAFF' }), [caff, caff2])).toBeNull();
+    expect(invoiceGuess(txn({ direction: 'out', amountPence: 6000, counterparty: 'Sam Client' }), [sam])).toBeNull();
   });
 });

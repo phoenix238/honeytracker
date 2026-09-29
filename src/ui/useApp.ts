@@ -217,7 +217,7 @@ export function useApp(): App {
       try {
         const res = await api.saveBatch(b);
         // A row changed elsewhere meanwhile was left alone, or receipts moved: fetch it all fresh.
-        if (res.skipped.some((x) => x.reason !== 'yours') || res.receiptsAttached) {
+        if (res.skipped.some((x) => x.reason !== 'yours') || res.receiptsAttached || res.invoicesPaid) {
           await reload();
           return res;
         }

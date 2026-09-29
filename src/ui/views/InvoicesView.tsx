@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { T, fonts } from '../theme';
 import { Button, Card, Chip, Empty, Field, Label, Money, Section, Sheet, Title, fmtDate, inputStyle } from '../components';
 import { api, invoicePdfUrl } from '../api';
-import { daysOverdue, formatInvoiceNumber, invoiceState, invoiceTotal, lineAmount, owedSummary, pastClients, timedDescription, type InvoiceState } from '../../core/invoices';
+import { daysOverdue, formatInvoiceNumber, invoiceState, invoiceTotal, lineAmount, mentionsInvoice, owedSummary, paidDifference, pastClients, timedDescription, type InvoiceState } from '../../core/invoices';
 import { CalendarPicker, InvoicePreview, NextNumber, TimeFields } from './invoiceParts';
 import { addDays } from '../../core/dates';
 import { formatAmount, formatGBP, parsePence } from '../../core/money';
@@ -16,6 +16,15 @@ type Filter = 'owed' | 'draft' | 'paid' | 'all';
 
 const STATE_LABEL: Record<InvoiceState, string> = { draft: 'Draft', open: 'Waiting', overdue: 'Overdue', paid: 'Paid', void: 'Void' };
 const STATE_COLOR: Record<InvoiceState, string> = { draft: T.textMuted, open: T.blue, overdue: T.danger, paid: T.green, void: T.textFaint };
+
+/** What actually came in for a paid invoice — and how far off the invoice it was. */
+function paidLine(inv: Invoice, txns: readonly Transaction[]): string {
+  const t = txns.find((x) => x.id === inv.paidTransactionId);
+  if (!t) return 'Paid — counted as income under its stream.';
+  const diff = paidDifference(t.amountPence, inv);
+  const how = t.source === 'cash' ? 'in cash' : 'into the bank';
+  return `Paid ${formatGBP(t.amountPence)} ${how} on ${fmtDate(t.date)}${diff ? ` — they ${diff} than the invoice` : ''}. Counted as income under its stream.`;
+}
 
 export function InvoicesView({ app }: { app: App }) {
   const data = app.data!;
@@ -209,7 +218,7 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
           <div style={{ fontSize: 14, lineHeight: 1.6 }}>
             <strong>{current.clientName}</strong> · <Money pence={invoiceTotal(current)} size={14} />
             <div style={{ fontSize: 12, color: T.textMuted }}>
-              {st === 'paid' ? 'Paid — counted as income under its stream.' : 'Void — kept for your records, not owed.'}
+              {st === 'paid' ? paidLine(current, data.transactions) : 'Void — kept for your records, not owed.'}
             </div>
           </div>
           <Button tone="primary" onClick={() => share(current.id, current.number, st === 'paid')}>
@@ -348,25 +357,38 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
                 <Button tone="green" onClick={() => setPaying(true)}>Mark as paid</Button>
               ) : (
                 <>
-                  <Label>Bank payments that fit</Label>
+                  <Label>Money in that could be it — tap the one that paid this</Label>
                   {candidates === null && <span style={{ fontSize: 13, color: T.textMuted }}>Looking…</span>}
                   {candidates?.length === 0 && (
                     <span style={{ fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
-                      No payment of {formatGBP(invoiceTotal(current))} in the bank yet. If it was cash, record it below; otherwise it’ll match itself when it arrives.
+                      Nothing has come into the bank since {fmtDate(addDays(current.issueDate, -7))} that could be it. When it lands it shows here — and if they used {current.number} as the reference for the full amount, it marks itself paid.
                     </span>
                   )}
-                  {candidates?.map((t) => (
-                    <Card key={t.id} onClick={() => app.payInvoice(current.id, { transactionId: t.id }).then((ok) => ok && onClose())} style={{ padding: 12 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <span style={{ fontSize: 14 }}>{t.counterparty || t.reference}</span>
-                        <Money pence={t.amountPence} size={14} />
-                      </div>
-                      <div style={{ fontSize: 11, color: T.textMuted }}>{fmtDate(t.date)}{t.reference ? ` · ${t.reference}` : ''} · tap if this is it</div>
-                    </Card>
-                  ))}
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <input style={{ ...inputStyle, flex: 1 }} type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} />
-                    <Button onClick={() => app.payInvoice(current.id, { date: paidDate, method: 'cash' }).then((ok) => ok && onClose())}>Paid in cash</Button>
+                  {candidates?.map((t) => {
+                    const diff = paidDifference(t.amountPence, current);
+                    return (
+                      <Card key={t.id} onClick={() => app.payInvoice(current.id, { transactionId: t.id }).then((ok) => ok && onClose())} style={{ padding: 12 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <span style={{ fontSize: 14, wordBreak: 'break-word' }}>{t.counterparty || t.reference || 'No name from the bank'}</span>
+                          <Money pence={t.amountPence} size={14} />
+                        </div>
+                        <div style={{ fontSize: 11, color: T.textMuted }}>
+                          {fmtDate(t.date)}{t.reference ? ` · ${t.reference}` : ''}
+                          {' · '}
+                          <span style={{ color: diff ? T.accent : T.green }}>{diff || 'exact amount'}</span>
+                          {mentionsInvoice(t, current.number) ? <span style={{ color: T.green }}> · quotes {current.number}</span> : null}
+                        </div>
+                      </Card>
+                    );
+                  })}
+                  <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+                      Paid in cash (or anywhere that isn’t your bank)? This adds {formatGBP(invoiceTotal(current))} as a new income line. Don’t use it for a bank payment — that would count the money twice.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <input style={{ ...inputStyle, flex: 1 }} type="date" value={paidDate} onChange={(e) => setPaidDate(e.target.value)} />
+                      <Button onClick={() => app.payInvoice(current.id, { date: paidDate, method: 'cash' }).then((ok) => ok && onClose())}>Record cash</Button>
+                    </div>
                   </div>
                 </>
               )}

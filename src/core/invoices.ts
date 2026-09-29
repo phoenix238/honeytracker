@@ -1,5 +1,6 @@
 import type { Invoice, InvoiceLine, IsoDate, Pence, Transaction } from './types.js';
 import { addDays } from './dates.js';
+import { formatGBP } from './money.js';
 
 // Invoices: totals, where each one stands, and finding the bank payment that settles it.
 // Everything here is derived — an invoice stores its lines and dates, never a frozen total
@@ -105,6 +106,52 @@ export function paymentCandidates(inv: Invoice, txns: readonly Transaction[]): T
       const rb = mentionsInvoice(b, inv.number) ? 0 : 1;
       return ra - rb || a.date.localeCompare(b.date);
     });
+}
+
+/**
+ * Every payment in that could have settled this invoice, best first: the exact amount, then the
+ * rest by how close the amount is — for a client who paid a little less or more, or paid two
+ * invoices in one go. Nothing already settling an invoice, and no transfers between your own accounts.
+ */
+export function possiblePayments(inv: Invoice, txns: readonly Transaction[], limit = 15): Transaction[] {
+  const total = invoiceTotal(inv);
+  const from = addDays(inv.issueDate, -7);
+  const score = (t: Transaction) => (mentionsInvoice(t, inv.number) ? 0 : 1) * 1e12 + Math.abs(t.amountPence - total) * 1e3 + Math.abs(Date.parse(t.date) - Date.parse(inv.issueDate)) / 8.64e7;
+  return txns
+    .filter((t) => t.direction === 'in' && t.date >= from && !t.meta.invoiceId && t.bucket !== 'transfer' && t.bucket !== 'personal')
+    .sort((a, b) => score(a) - score(b))
+    .slice(0, limit);
+}
+
+/** Letters only, and no "Ltd": "ETHICAL CAFF LTD" and "Ethical Caff Limited" read the same. */
+function nameKey(s: string): string {
+  return s.toLowerCase().replace(/\b(ltd|limited|plc|llp|the)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim();
+}
+
+/**
+ * The open invoice a payment coming in most likely settles, or null. It has to be the only one
+ * that fits: the invoice number in the reference, or the client's name in the payer — the
+ * amount only settles a tie. A name alone for someone with two open invoices isn't enough.
+ */
+export function invoiceGuess(t: Pick<Transaction, 'direction' | 'amountPence' | 'counterparty' | 'reference' | 'meta'>, invoices: readonly Invoice[]): Invoice | null {
+  if (t.direction !== 'in' || t.meta.invoiceId) return null;
+  const open = openInvoices(invoices);
+  const byNumber = open.filter((i) => mentionsInvoice(t, i.number));
+  if (byNumber.length === 1) return byNumber[0]!;
+  const payer = nameKey(`${t.counterparty} ${t.reference}`);
+  const byName = open.filter((i) => {
+    const client = nameKey(i.clientName);
+    return client.length >= 3 && (payer.includes(client) || (payer.length >= 3 && client.includes(nameKey(t.counterparty)) && nameKey(t.counterparty).length >= 3));
+  });
+  if (byName.length === 1) return byName[0]!;
+  const exact = byName.filter((i) => invoiceTotal(i) === t.amountPence);
+  return exact.length === 1 ? exact[0]! : null;
+}
+
+/** "paid £5.13 less" / "paid £10.00 more" when a payment isn't the invoice's exact total; '' when it is. */
+export function paidDifference(paidPence: Pence, inv: Invoice): string {
+  const diff = paidPence - invoiceTotal(inv);
+  return diff === 0 ? '' : `paid ${formatGBP(Math.abs(diff))} ${diff < 0 ? 'less' : 'more'}`;
 }
 
 export interface OwedSummary {

@@ -83,6 +83,8 @@ export interface BatchItem {
   unlessYours?: boolean;
   /** Receipts (emailed or snapped) to attach to the row as its evidence. */
   attachReceiptIds?: string[];
+  /** The invoice this money in settles — it's marked paid with the same swipe. */
+  payInvoiceId?: string;
 }
 
 export interface BatchResult {
@@ -92,6 +94,7 @@ export interface BatchResult {
   ruleId: string | null;
   rule: Rule | null;
   receiptsAttached: number;
+  invoicesPaid: number;
 }
 
 export const api = {

@@ -213,16 +213,16 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
  * link it yourself, the row is classified whatever it was; when it's matched automatically,
  * a classification you made yourself is kept.
  */
-export async function linkInvoicePayment(repo: Repo, inv: Invoice, txnId: string, byUser: boolean): Promise<void> {
+export async function linkInvoicePayment(repo: Repo, inv: Invoice, txnId: string, byUser: boolean, batchId: string | null = null): Promise<void> {
   const t = await repo.getTransaction(txnId);
   if (!t) return;
   await repo.updateInvoice(inv.id, { paidTransactionId: t.id });
   const mine = t.classifiedBy === 'user' || t.classifiedBy === 'import';
   const note = t.note || `Invoice ${inv.number}${inv.clientName ? ` · ${inv.clientName}` : ''}`;
   if (byUser || !mine) {
-    await repo.updateTransaction(t.id, { bucket: 'business_income', streamId: inv.streamId, category: null, classifiedBy: byUser ? 'user' : 'invoice', note, meta: { invoiceId: inv.id } });
+    await repo.updateTransaction(t.id, { bucket: 'business_income', streamId: inv.streamId, category: null, classifiedBy: byUser ? 'user' : 'invoice', note, meta: { invoiceId: inv.id } }, { batchId });
   } else {
-    await repo.updateTransaction(t.id, { meta: { invoiceId: inv.id } });
+    await repo.updateTransaction(t.id, { meta: { invoiceId: inv.id } }, { batchId });
   }
 }
 

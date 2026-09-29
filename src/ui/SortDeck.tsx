@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import type { ExpenseCategory, Receipt, Transaction } from '../core/types';
+import type { ExpenseCategory, Invoice, Receipt, Transaction } from '../core/types';
 import { receiptsFor } from '../core/receiptMatch';
+import { invoiceGuess, invoiceTotal, paidDifference } from '../core/invoices';
+import { formatGBP } from '../core/money';
 import { QUICK_CATEGORIES, categoryInfo } from '../core/hmrc';
 import { findSimilar, needsDecision, orderQueue, predict, rulePattern, type Decision } from '../core/sortQueue';
 import { mkId } from '../core/id';
@@ -62,6 +64,8 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
   const [leaving, setLeaving] = useState<'left' | 'right' | null>(null);
   /** Attach the receipt Honey found for this card (on by default; untick if it's the wrong one). */
   const [attach, setAttach] = useState(true);
+  /** Mark the invoice Honey thinks this payment settles as paid (on by default). */
+  const [payIt, setPayIt] = useState(true);
   const [day, setDay] = useState(() => {
     const saved = readStore<{ date: string; done: number }>('ht:sortDay', { date: '', done: 0 });
     return saved.date === data.today ? saved : { date: data.today, done: 0 };
@@ -91,13 +95,17 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     setShowSimilar(false);
     setUnticked(new Set());
     setAttach(true);
+    setPayIt(true);
   }, [card?.id]);
 
   const guess = card
     ? predict(card, { streams: data.streams, settings: data.settings, receipts: data.receipts, history: data.transactions, lastStreamId: lastStream })
     : null;
+  // Money in that looks like an invoice being paid — by its number, or the client's name.
+  const invoice = card ? invoiceGuess(card, data.invoices) : null;
+  const paying = invoice && payIt ? invoice : null;
   const mine = pick.id === card?.id ? pick : { id: card?.id ?? '' };
-  const streamId = mine.streamId !== undefined ? mine.streamId : guess?.right.streamId ?? null;
+  const streamId = mine.streamId !== undefined ? mine.streamId : paying?.streamId ?? guess?.right.streamId ?? null;
   const category = mine.category !== undefined ? mine.category : guess?.right.category ?? null;
   // Similar rows in the same state as this card, so a swipe never un-sorts something already decided.
   const similar = card && smart ? findSimilar(card, waiting).filter((x) => x.bucket === card.bucket) : [];
@@ -140,7 +148,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     return out;
   };
 
-  const commit = (t: Transaction, decision: Decision, others: Transaction[], shownReceipt: Receipt | null) => {
+  const commit = (t: Transaction, decision: Decision, others: Transaction[], shownReceipt: Receipt | null, pays: Invoice | null = null) => {
     const batchId = mkId();
     const rows = [t, ...others];
     const receiptOf = decision.bucket === 'business_expense' ? receiptsForRows(rows, shownReceipt) : new Map<string, string>();
@@ -159,6 +167,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
         ? `Business cost · ${categoryInfo(patch.category!).label}`
         : BUCKET_LABEL[decision.bucket];
     const ids = rows.map((r) => r.id);
+    const settles = decision.bucket === 'business_income' ? pays : null;
     setPending((p) => new Set([...p, ...ids]));
     setSkipped((s) => s.filter((id) => !ids.includes(id)));
     setError('');
@@ -174,6 +183,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
             expectUpdatedAt: r.updatedAt,
             unlessYours: r.id !== t.id,
             ...(receiptOf.has(r.id) ? { attachReceiptIds: [receiptOf.get(r.id)!] } : {}),
+            ...(settles && r.id === t.id ? { payInvoiceId: settles.id } : {}),
           })),
           rule,
         });
@@ -181,6 +191,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
         const text =
           `${n === 1 ? (t.counterparty || t.reference || 'Row') : `${n} rows`} → ${label}` +
           (res.receiptsAttached ? ` · ${res.receiptsAttached} receipt${res.receiptsAttached === 1 ? '' : 's'} attached` : '') +
+          (res.invoicesPaid && settles ? ` · ${settles.number} marked paid` : '') +
           (res.rule ? ` · new “${res.rule.pattern}” ones will sort themselves` : '') +
           (res.skipped.length ? ` · ${res.skipped.length} left as they were (changed meanwhile)` : '');
         const entry = { batchId, count: n, text };
@@ -221,7 +232,8 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     const decision: Decision = { ...guess.right, streamId, category };
     if (card.direction === 'out' && !decision.category) return setStep('category');
     if (streams.length > 1 && !decision.streamId) return setStep('stream');
-    fly('right', () => commit(t, decision, others, shown));
+    const pays = paying;
+    fly('right', () => commit(t, decision, others, shown, pays));
   };
 
   const skip = () => {
@@ -406,7 +418,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
               )}
               <div style={{ fontSize: 12, color: T.textMuted, textAlign: 'right' }}>
                 {fmtDate(card.date)}
-                {card.meta.account ? ` · ${card.meta.account}` : card.source === 'cash' ? ' · cash' : card.source === 'import' ? ' · old app' : ''}
+                {card.meta.account ? ` · ${card.meta.account}` : card.source === 'cash' ? ' · cash' : ''}
               </div>
               <div>
                 <div style={{ fontFamily: fonts.display, fontSize: 20, fontWeight: 800, lineHeight: 1.2, wordBreak: 'break-word' }}>
@@ -424,6 +436,15 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                     🧾 Found its receipt: {guess.receipt.merchant || guess.receipt.filename}
                     {guess.receipt.date ? ` · ${fmtDate(guess.receipt.date)}` : ''} · {/^(message|email)|\.eml$|text\/plain/i.test(`${guess.receipt.filename} ${guess.receipt.mime}`) ? 'from your email' : 'you snapped it'}.{' '}
                     Attaches when you swipe it as business.
+                  </span>
+                </label>
+              )}
+              {invoice && (
+                <label onPointerDown={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: T.green, lineHeight: 1.5 }}>
+                  <input type="checkbox" checked={payIt} onChange={(e) => setPayIt(e.target.checked)} style={{ marginTop: 2 }} />
+                  <span>
+                    📄 Looks like {invoice.number}{invoice.clientName ? ` · ${invoice.clientName}` : ''} · {formatGBP(invoiceTotal(invoice))}
+                    {paidDifference(card.amountPence, invoice) ? ` (${paidDifference(card.amountPence, invoice)})` : ''}. Marked paid when you swipe it as business.
                   </span>
                 </label>
               )}
@@ -496,7 +517,8 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                       const t = card;
                       const others = alsoSorting;
                       const shown = guess!.receipt;
-                      fly('right', () => commit(t, { ...guess!.right, streamId: s.id, category }, others, shown));
+                      const pays = paying;
+                      fly('right', () => commit(t, { ...guess!.right, streamId: s.id, category }, others, shown, pays));
                     }}>
                       {s.name}
                     </Pill>

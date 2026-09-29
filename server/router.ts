@@ -9,7 +9,7 @@ import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
-import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
+import { invoiceTotal, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { buildWorkbook } from './workbook.js';
 import { eventsBetween, fetchCalendar } from './calendar.js';
@@ -257,7 +257,7 @@ const routes: [string, RegExp, Handler][] = [
     const items = Array.isArray(b.items) ? (b.items as Record<string, unknown>[]).slice(0, 1000) : [];
     if (!items.length) throw new HttpError(400, 'Nothing to save');
     const byId = new Map((await r.listTransactions()).map((t) => [t.id, t]));
-    const plan: { current: Transaction; patch: ReturnType<typeof classification>; receiptIds: string[] }[] = [];
+    const plan: { current: Transaction; patch: ReturnType<typeof classification>; receiptIds: string[]; invoiceId: string }[] = [];
     const skipped: { id: string; reason: 'not found' | 'changed since' | 'yours' }[] = [];
     for (const it of items) {
       const id = str(it?.id, 64);
@@ -266,12 +266,13 @@ const routes: [string, RegExp, Handler][] = [
       if (it.expectUpdatedAt !== undefined && str(it.expectUpdatedAt, 40) !== current.updatedAt) { skipped.push({ id, reason: 'changed since' }); continue; }
       if (it.unlessYours === true && current.classifiedBy === 'user' && current.bucket !== 'unreviewed') { skipped.push({ id, reason: 'yours' }); continue; }
       const receiptIds = Array.isArray(it.attachReceiptIds) ? it.attachReceiptIds.map((x) => str(x, 64)).filter(Boolean).slice(0, 5) : [];
-      plan.push({ current, patch: classification((it.patch ?? {}) as Record<string, unknown>, current), receiptIds });
+      plan.push({ current, patch: classification((it.patch ?? {}) as Record<string, unknown>, current), receiptIds, invoiceId: str(it.payInvoiceId, 64) });
     }
     const rule = b.rule ? ruleFrom(b.rule) : null;
     const updated: Transaction[] = [];
     let receiptsAttached = 0;
-    for (const { current, patch, receiptIds } of plan) {
+    const invoicesPaid: string[] = [];
+    for (const { current, patch, receiptIds, invoiceId } of plan) {
       const t = await r.updateTransaction(current.id, { ...patch, ...decidedBy(patch.bucket ?? current.bucket) }, { batchId, existing: current });
       if (!t) continue;
       // Receipts found for the line (emailed or snapped) — only ones not already evidence for something.
@@ -282,8 +283,17 @@ const routes: [string, RegExp, Handler][] = [
         t.receiptIds = [...t.receiptIds, rid];
         receiptsAttached++;
       }
+      // Money in that settles an invoice: the invoice is marked paid by it, as part of the same batch.
+      const inv = invoiceId && t.direction === 'in' && !t.meta.invoiceId ? await r.getInvoice(invoiceId) : null;
+      if (inv && inv.status === 'sent' && !inv.paidTransactionId) {
+        await linkInvoicePayment(r, inv, t.id, true, batchId);
+        invoicesPaid.push(inv.id);
+        updated.push((await r.getTransaction(t.id)) ?? t);
+        continue;
+      }
       updated.push(t);
     }
+    if (invoicesPaid.length) await r.setKv(`batch:${batchId}:invoices`, { ids: invoicesPaid });
     // "Do the same for new ones": only rows still to come — the ones here were just decided.
     // A newer decision about the same payee replaces the old rule rather than fighting it.
     const replaced = rule
@@ -292,13 +302,21 @@ const routes: [string, RegExp, Handler][] = [
     for (const old of replaced) await r.deleteRule(old.id);
     const saved = rule ? await r.insertRule(rule) : null;
     if (saved) await r.setKv(`batch:${batchId}:rule`, { ruleId: saved.id, replaced });
-    return json({ batchId, updated, skipped, ruleId: saved?.id ?? null, rule: saved, receiptsAttached });
+    return json({ batchId, updated, skipped, ruleId: saved?.id ?? null, rule: saved, receiptsAttached, invoicesPaid: invoicesPaid.length });
   }],
   ['POST', /^\/api\/batches\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
     if (await r.getKv(`batch:${id}:undone`)) throw new HttpError(409, 'That was already undone.');
-    const [updates, made, links] = await Promise.all([r.batchUpdates(id!), r.getKv<{ ruleId: string; replaced?: Rule[] }>(`batch:${id}:rule`), r.batchReceiptLinks(id!)]);
+    const [updates, made, links, paid] = await Promise.all([
+      r.batchUpdates(id!), r.getKv<{ ruleId: string; replaced?: Rule[] }>(`batch:${id}:rule`), r.batchReceiptLinks(id!), r.getKv<{ ids: string[] }>(`batch:${id}:invoices`),
+    ]);
     const ruleId = made?.ruleId ?? null;
     if (!updates.length && !ruleId && !links.length) throw new HttpError(404, 'Nothing to undo');
+    // Invoices the batch marked paid go back to waiting — if the payment they point at is still one the batch sorted.
+    const sorted = new Set(updates.map((u) => u.transactionId));
+    for (const invId of paid?.ids ?? []) {
+      const inv = await r.getInvoice(invId);
+      if (inv?.paidTransactionId && sorted.has(inv.paidTransactionId)) await r.updateInvoice(invId, { paidTransactionId: null });
+    }
     // Receipts the batch attached go back to being unattached — if they're still where it put them.
     for (const l of links) {
       const rc = await r.getReceipt(l.receiptId);
@@ -618,7 +636,7 @@ const routes: [string, RegExp, Handler][] = [
   ['GET', /^\/api\/invoices\/([\w-]+)\/candidates$/, async (_req, r, [id]) => {
     const inv = await r.getInvoice(id!);
     if (!inv) throw new HttpError(404, 'Not found');
-    return json(paymentCandidates(inv, await r.listTransactions()).slice(0, 10));
+    return json(possiblePayments(inv, await r.listTransactions()));
   }],
   ['GET', /^\/api\/invoices\/([\w-]+)\/pdf$/, async (_req, r, [id], url) => {
     const inv = await r.getInvoice(id!);
