@@ -11,6 +11,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, paymentCandidates } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
+import { buildWorkbook } from './workbook.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
 import { planBatchUndo } from './batchUndo.js';
 import { applyRules, linkInvoicePayment } from './sync.js';
@@ -799,6 +800,19 @@ const routes: [string, RegExp, Handler][] = [
   }],
 
   // ── Export ────────────────────────────────────────────────────────────────────────
+  // The year as a workbook to check, change and compare before it goes to the accountant.
+  ['GET', /^\/api\/export\.xlsx$/, async (_req, r, _p, url) => {
+    const year = Number(url.searchParams.get('year')) || taxYearOf(today());
+    const [txns, streams, settings] = await Promise.all([r.listTransactions(), r.listStreams(), r.getSettings()]);
+    const file = await buildWorkbook(txns, streams, settings, year, today());
+    return new Response(new Uint8Array(file), {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="honey-${year}-${String((year + 1) % 100).padStart(2, '0')}-to-check.xlsx"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }],
   // The ledger to edit in a spreadsheet and bring back (Settings → Spreadsheet).
   ['GET', /^\/api\/export-edit\.csv$/, async (_req, r, _p, url) => {
     const which = url.searchParams.get('year');

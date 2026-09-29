@@ -855,3 +855,51 @@ describe('other banks and spreadsheets', () => {
     expect(body.slice(1).every((l) => l.startsWith('h-'))).toBe(true);
   });
 });
+
+describe('workbook to check before the accountant', () => {
+  it('has every line of the year, Honey’s figures beside formulas, and a Transactions sheet that comes back as-is', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const { parseCsv } = await import('../../src/core/csv');
+    const { planEditImport } = await import('../../src/core/csvRoundTrip');
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    feed.push(item('w1', 60, 'IN', daysAgo(4), { counterPartyName: 'Lara Bligh' }));
+    feed.push(item('w2', 20, 'OUT', daysAgo(3), { counterPartyName: 'WHR Consulting', source: 'FASTER_PAYMENTS_OUT' }));
+    feed.push(item('w3', 14.88, 'OUT', daysAgo(2), { counterPartyName: 'TESCO', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    const state = (await call('GET', '/api/state')).data;
+    const by = (uid: string) => state.transactions.find((t: Transaction) => t.sourceId === uid)!;
+    await call('PATCH', `/api/transactions/${by('w1').id}`, { bucket: 'business_income', streamId: stream.id });
+    await call('PATCH', `/api/transactions/${by('w2').id}`, { bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
+
+    const { taxYearOf } = await import('../../src/core/dates');
+    const fresh = (await call('GET', '/api/state')).data;
+    const year = taxYearOf(by('w3').date);
+    // The three lines only share a tax year if none crosses 6 April; skip the year check if one does.
+    const sameYear = ['w1', 'w2', 'w3'].every((u) => taxYearOf(by(u).date) === year);
+    const res = await handle(new Request(`${BASE}/api/export.xlsx?year=${year}`, { headers: { cookie } }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('spreadsheetml');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(Buffer.from(await res.arrayBuffer()) as unknown as ArrayBuffer);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['Summary', 'Transactions', 'Lists']);
+    const tx = wb.getWorksheet('Transactions')!;
+    if (sameYear) expect(tx.rowCount).toBe(4);
+    const summary = wb.getWorksheet('Summary')!;
+    const cells: { label: string; honey: unknown; sheet: unknown }[] = [];
+    summary.eachRow((r) => cells.push({ label: String(r.getCell(1).value ?? ''), honey: r.getCell(3).value, sheet: r.getCell(4).value }));
+    if (sameYear) {
+      const turnover = cells.find((c) => c.label.startsWith('Turnover'))!;
+      expect(turnover.honey).toBe(60);
+      expect((turnover.sheet as { formula: string; result: number }).result).toBe(60);
+      expect((turnover.sheet as { formula: string }).formula).toContain('SUMIFS(Transactions!$P$2:$P$4');
+      expect(cells.find((c) => c.label.startsWith('Net profit'))!.honey).toBe(40);
+    }
+
+    // Saved as CSV, the Transactions sheet reads back into Honey with nothing changed.
+    const csv = (await wb.csv.writeBuffer({ sheetName: 'Transactions' })).toString();
+    const plan = planEditImport(parseCsv(csv), fresh.transactions, fresh.streams);
+    expect(plan).toMatchObject({ problems: [], conflicts: [], changes: [] });
+    expect(plan.unchanged).toBe(tx.rowCount - 1);
+  });
+});

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { T } from '../theme';
 import { Button, Card, Chip, Field, Label, Section, inputStyle } from '../components';
 import { api, exportEditUrl } from '../api';
+import { shareOrDownload } from '../download';
 import { parseCsv } from '../../core/csv';
 import { isEditFile, planEditImport, type CsvPlan } from '../../core/csvRoundTrip';
 import { detectStatement, parseStatement, type Statement } from '../../core/bankCsv';
@@ -29,30 +30,9 @@ export function SpreadsheetSection({ app }: { app: App }) {
 
   const download = async () => {
     setStatus(null);
-    try {
-      const res = await fetch(exportEditUrl(year), { credentials: 'same-origin' });
-      if (!res.ok) throw new Error(`the server said ${res.status}`);
-      const blob = await res.blob();
-      const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? 'honey-to-edit.csv';
-      // On an iPhone the share sheet is the reliable way out: Save to Files, Numbers, Mail…
-      const file = new File([blob], name, { type: 'text/csv' });
-      if (navigator.canShare?.({ files: [file] })) {
-        try {
-          await navigator.share({ files: [file], title: name });
-          return;
-        } catch (e) {
-          if ((e as Error).name === 'AbortError') return;
-        }
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    } catch (e) {
-      setStatus({ text: `Couldn’t make the file — ${(e as Error).message}.`, bad: true });
-    }
+    await shareOrDownload(exportEditUrl(year), 'honey-to-edit.csv', 'text/csv').catch((e: Error) =>
+      setStatus({ text: `Couldn’t make the file — ${e.message}.`, bad: true }),
+    );
   };
 
   const read = async (f: File) => {
@@ -159,6 +139,10 @@ export function SpreadsheetSection({ app }: { app: App }) {
           <Chip active={year === 'all'} onClick={() => setYear('all')}>Everything</Chip>
         </div>
         <Button onClick={download}>⬇︎ Download to edit ({year === 'all' ? 'everything' : taxYearLabel(year)})</Button>
+        <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.5 }}>
+          For a tidy workbook to check and send to your accountant — with totals per HMRC box — use Tax → “Download workbook to check”. Its Transactions sheet, saved as CSV, can
+          come back in here too.
+        </div>
         <input ref={fileRef} type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void read(f); }} />
         <Button tone="primary" disabled={working} onClick={() => fileRef.current?.click()}>⬆︎ Bring a spreadsheet or bank statement in</Button>
         <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.5 }}>

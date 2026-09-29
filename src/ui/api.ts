@@ -138,3 +138,4 @@ export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;
 export const invoicePdfUrl = (id: string, download = false) => `/api/invoices/${id}/pdf${download ? '?download=1' : ''}`;
 export const exportCsvUrl = (year: number) => `/api/export.csv?year=${year}`;
 export const exportEditUrl = (year: number | 'all') => `/api/export-edit.csv?year=${year}`;
+export const exportWorkbookUrl = (year: number) => `/api/export.xlsx?year=${year}`;

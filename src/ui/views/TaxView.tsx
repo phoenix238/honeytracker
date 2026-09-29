@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { T, fonts } from '../theme';
 import { Button, Card, Field, Label, Money, Section, Title, fmtDate, inputStyle } from '../components';
-import { exportCsvUrl } from '../api';
+import { exportCsvUrl, exportWorkbookUrl } from '../api';
+import { XLSX, shareOrDownload } from '../download';
 import { quarterlySummaries, sa103Lines, summarise, tradingStreams, type StreamSummary } from '../../core/ledger';
 import { liability, ratesFor, tradingProfit } from '../../core/ukTax';
 import { taxYearBounds, taxYearLabel, taxYearOf } from '../../core/dates';
@@ -11,7 +12,7 @@ import type { App } from '../useApp';
 
 // Everything the tax return needs, already added up: the self-employment pages per stream
 // with HMRC's box numbers, the quarterly figures Making Tax Digital asks for, the payment
-// calendar, and a CSV for an accountant.
+// calendar, and a workbook to check before it goes to an accountant.
 
 const MTD_STEPS = [
   { from: 2026, threshold: 5_000_000, basedOn: 2024 },
@@ -23,6 +24,7 @@ export function TaxView({ app }: { app: App }) {
   const data = app.data!;
   const p = app.picture!;
   const current = taxYearOf(data.today);
+  const [saving, setSaving] = useState(false);
   const [year, setYear] = useState(current);
   const streams = new Map(data.streams.map((s) => [s.id, s]));
 
@@ -104,8 +106,24 @@ export function TaxView({ app }: { app: App }) {
         {view.summaries.map((s) => (
           <Sa103Card key={s.streamId ?? 'none'} s={s} name={s.streamId ? streams.get(s.streamId)?.name ?? 'Stream' : 'No stream set'} />
         ))}
+        <Button
+          tone="primary"
+          disabled={saving}
+          onClick={async () => {
+            setSaving(true);
+            await shareOrDownload(exportWorkbookUrl(year), 'honey-to-check.xlsx', XLSX)
+              .catch((e: Error) => app.notify(`Couldn’t make the workbook — ${e.message}.`))
+              .finally(() => setSaving(false));
+          }}
+        >
+          {saving ? 'Making the workbook…' : `Download ${taxYearLabel(year)} workbook to check (Excel / Numbers)`}
+        </Button>
+        <div style={{ fontSize: 11, color: T.textFaint, lineHeight: 1.5 }}>
+          Every line with drop-downs to change what it is, and a Summary of these pages worked out from them beside Honey’s own figures — so anything you amend shows as a
+          difference. Check it, then send it to your accountant.
+        </div>
         <a href={exportCsvUrl(year)} style={{ textDecoration: 'none' }}>
-          <Button style={{ width: '100%' }}>Download {taxYearLabel(year)} ledger (CSV for an accountant)</Button>
+          <Button style={{ width: '100%' }}>Download {taxYearLabel(year)} ledger (plain CSV)</Button>
         </a>
       </Section>
 
