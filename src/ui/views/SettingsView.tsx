@@ -1,12 +1,10 @@
-import { useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { T, fonts } from '../theme';
 import { BUCKET_LABEL, Button, Card, Chip, Field, Section, Title, inputStyle } from '../components';
 import { categoryInfo } from '../../core/hmrc';
 import { formatAmount, parsePence } from '../../core/money';
-import { parseHoneypotBackup, type ImportedItem } from '../../core/importers';
 import { api } from '../api';
-import { isBankRow, type BusinessProfile, type Stream } from '../../core/types';
-import { transferKind } from '../../core/transfers';
+import type { BusinessProfile, Stream } from '../../core/types';
 import type { App } from '../useApp';
 import { GoogleSection } from './GoogleSection';
 import { SpreadsheetSection } from './SpreadsheetSection';
@@ -51,7 +49,6 @@ export function SettingsView({ app }: { app: App }) {
         <FreshSection app={app} />
         <SpreadsheetSection app={app} />
         <StorageSection app={app} />
-        {!data.fresh && <ImportSection app={app} />}
       </Group>
 
       <Button tone="danger" onClick={app.signOut}>Sign out</Button>
@@ -60,8 +57,8 @@ export function SettingsView({ app }: { app: App }) {
 }
 
 /**
- * You and your work, in your own words. The receipt reader and Sort with AI both read it, so
- * they judge a payment the way you would: which work it's for, and why it's a cost of it.
+ * You and your work, in your own words. The receipt reader reads it, so it judges a payment
+ * the way you would: which work it's for, and why it's a cost of it.
  */
 function AboutMeSection({ app }: { app: App }) {
   const data = app.data!;
@@ -79,7 +76,7 @@ function AboutMeSection({ app }: { app: App }) {
     <Section title="About you and your work">
       <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
-          The AI reads this before every receipt (Gmail, Drive and your photos) and every “Sort with AI”, so it knows what you do, what you buy for each kind of work, and why a
+          The AI reads this before every receipt (Gmail, Drive and your photos), so it knows what you do, what you buy for each kind of work, and why a
           payment is a business cost. Write it the way you’d explain it to your accountant.
         </div>
         <textarea
@@ -126,7 +123,7 @@ function StreamsSection({ app }: { app: App }) {
           <span style={{ width: 12, height: 12, borderRadius: 6, background: s.color }} />
           <span style={{ flex: 1, fontWeight: 600 }}>
             {s.name}
-            {data.config.aiSort && !s.about && !s.archived && <span style={{ display: 'block', fontSize: 11, fontWeight: 400, color: T.accent }}>Tap to describe it — the AI sorts much better</span>}
+            {data.config.receiptsAi && !s.about && !s.archived && <span style={{ display: 'block', fontSize: 11, fontWeight: 400, color: T.accent }}>Tap to describe it — receipts get matched to it better</span>}
           </span>
           <span style={{ fontSize: 11, color: T.textMuted }}>
             {s.kind === 'other' ? 'Not taxed here' : 'Self-employment'}
@@ -225,8 +222,6 @@ function TransfersSection({ app }: { app: App }) {
   const data = app.data!;
   const on = data.settings.transfersPersonal;
   const names = [data.settings.profile.name || data.settings.name, data.settings.profile.businessName].filter(Boolean);
-  const waiting = data.transactions.filter((t) => isBankRow(t) && t.bucket === 'unreviewed' && !t.classifiedBy && transferKind(t, names)).length;
-  const [last, setLast] = useState<{ batchId: string; changed: number } | null>(null);
   return (
     <Section title="Bank transfers">
       <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -243,25 +238,6 @@ function TransfersSection({ app }: { app: App }) {
         </label>
         {!names.length && on && (
           <div style={{ fontSize: 12, color: T.accentBright }}>Add your name in Your details below, so moves between your own accounts are recognised.</div>
-        )}
-        {on && waiting > 0 && (
-          <Button
-            disabled={app.busy}
-            onClick={async () => {
-              const res = await api.applyTransfers().catch((e: Error) => { app.notify(e.message); return null; });
-              if (!res) return;
-              setLast(res.batchId ? { batchId: res.batchId, changed: res.changed } : null);
-              await app.reload();
-            }}
-          >
-            Sort the {waiting} transfer{waiting === 1 ? '' : 's'} waiting now
-          </Button>
-        )}
-        {last && (
-          <div style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <span>{last.changed} sorted.</span>
-            <Button tone="quiet" style={{ padding: '4px 8px' }} onClick={async () => { await app.undoBatch(last.batchId); setLast(null); }}>Undo</Button>
-          </div>
         )}
       </Card>
     </Section>
@@ -290,125 +266,6 @@ function RulesSection({ app }: { app: App }) {
           <Button tone="quiet" onClick={() => app.deleteRule(r.id)} style={{ padding: '4px 8px' }}>Remove</Button>
         </Card>
       ))}
-    </Section>
-  );
-}
-
-/**
- * Records from the old app (Honeypot0101) come in once, from its backup file, and then they're
- * ordinary rows — sorted, searched and exported like everything else. Once they're in, this
- * shrinks to one line; bringing the same file in again never doubles anything.
- */
-function ImportSection({ app }: { app: App }) {
-  const data = app.data!;
-  const fileRef = useRef<HTMLInputElement>(null);
-  const brought = data.transactions.filter((t) => t.source === 'import' || t.meta.importedFrom).length;
-  const active = data.streams.filter((s) => !s.archived);
-  const [streamId, setStreamId] = useState<string | null>(active.length === 1 ? active[0]!.id : null);
-  const [status, setStatus] = useState('');
-  const [open, setOpen] = useState(false);
-  const [importing, setImporting] = useState(false);
-
-  const send = async (items: ImportedItem[]) => {
-    const totals = { linked: 0, created: 0, already: 0, unreadable: 0, receipts: 0, bigPhotos: 0 };
-    // A single photo bigger than a request can carry would fail the whole batch: keep the
-    // record, drop just that photo.
-    const safeItems = items.map((it) => {
-      if ((it.imageDataUrl?.length ?? 0) > 3_000_000) {
-        totals.bigPhotos++;
-        return { ...it, imageDataUrl: null };
-      }
-      return it;
-    });
-    // Small batches: old receipts carry their photos inline, and requests have a size limit.
-    for (let i = 0; i < safeItems.length; ) {
-      const batch: ImportedItem[] = [];
-      let size = 0;
-      while (i < safeItems.length && batch.length < 40 && size < 3_000_000) {
-        const it = safeItems[i++]!;
-        batch.push(it);
-        size += (it.imageDataUrl?.length ?? 0) + 300;
-      }
-      setStatus(`Importing ${Math.min(i, safeItems.length)} of ${safeItems.length}… keep this screen open.`);
-      const r = await api.importItems(batch, streamId);
-      totals.linked += r.linked;
-      totals.created += r.created;
-      totals.already += r.already;
-      totals.unreadable += r.unreadable;
-      totals.receipts += r.receipts;
-    }
-    const done =
-      `Import done: ${totals.linked} matched to bank lines, ${totals.created} added (not found in the bank feed — check these), ` +
-      `${totals.receipts} receipt photos` +
-      (totals.already ? `, ${totals.already} already imported earlier (skipped, nothing doubled)` : '') +
-      (totals.unreadable ? `, ${totals.unreadable} unreadable (no valid date or amount)` : '') +
-      (totals.bigPhotos ? `, ${totals.bigPhotos} photos too large to bring over (their records came in without them)` : '') +
-      '.';
-    setStatus(done);
-    app.notify(done);
-    await app.reload();
-  };
-
-  const fromFile = async (file: File) => {
-    setImporting(true);
-    setStatus(`Reading ${file.name}…`);
-    try {
-      let raw: unknown;
-      try {
-        raw = JSON.parse(await file.text());
-      } catch {
-        throw new Error(`“${file.name}” isn’t a Honey backup — it couldn’t be read as a backup file. In the old app use Settings → Export backup, and pick the .json file it saves.`);
-      }
-      const items = parseHoneypotBackup(raw);
-      const income = items.filter((i) => i.kind === 'income').length;
-      const expenses = items.length - income;
-      const photos = items.filter((i) => i.imageDataUrl).length;
-      setStatus(`Found ${income} paid income records and ${expenses} business expenses (${photos} with photos). Importing…`);
-      await send(items);
-    } catch (e) {
-      const msg = `Import didn’t finish: ${(e as Error).message}`;
-      setStatus(msg);
-      app.notify(msg);
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  return (
-    <Section title="Old app records">
-      <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {brought > 0 && !open && !importing ? (
-          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-            ✓ {brought} record{brought === 1 ? '' : 's'} from your old app are in, mixed in with everything else under Money.{' '}
-            <button type="button" onClick={() => setOpen(true)} style={{ background: 'none', border: 'none', color: T.textMuted, textDecoration: 'underline', padding: 0, fontSize: 12, cursor: 'pointer' }}>
-              Bring in a backup again
-            </button>
-          </div>
-        ) : (
-          <>
-            <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
-              In the old app: Settings → Export backup, then pick that .json file here. Sync the bank first, so old records join their bank lines instead of being counted twice. Anything with no bank line (cash) comes in as its own row. Bringing the same file in twice never doubles anything.
-            </div>
-            {active.length > 1 && (
-              <Field label="File them under" hint={streamId === null ? 'They wait in Sort for you to pick the stream, one swipe each (similar ones together).' : 'Everything brought in goes under this one stream.'}>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Chip active={streamId === null} onClick={() => setStreamId(null)}>Pick while sorting</Chip>
-                  {active.map((s) => <Chip key={s.id} active={streamId === s.id} color={s.color} onClick={() => setStreamId(s.id)}>{s.name}</Chip>)}
-                </div>
-              </Field>
-            )}
-            <input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void fromFile(f); }} />
-            <Button tone={brought ? 'plain' : 'primary'} disabled={importing} onClick={() => fileRef.current?.click()}>
-              {importing ? 'Bringing them in…' : 'Choose the backup file'}
-            </Button>
-          </>
-        )}
-        {status && (
-          <div style={{ fontSize: 13, color: T.text, lineHeight: 1.5, background: T.bg, border: `1px solid ${status.startsWith('Import didn') ? T.danger : T.accent}`, borderRadius: 10, padding: '10px 12px' }}>
-            {status}
-          </div>
-        )}
-      </Card>
     </Section>
   );
 }

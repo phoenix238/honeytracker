@@ -8,19 +8,14 @@ import { categoryInfo } from '../../core/hmrc';
 import { api, type CstlBankUnlinked } from '../api';
 import type { Transaction } from '../../core/types';
 import type { App } from '../useApp';
-import { DoublesSheet, checkCounts, checkSummary as summary } from './DoublesSheet';
 
 // Every movement of money. Sorting happens in the swipe deck; this is where you look things up,
-// see the totals, and find what you swiped away ("Not business") to put it back. Records brought
-// over from the old app are just rows like any other — no separate place to look.
+// see the totals, and find what you swiped away ("Not business") to put it back.
 
-type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'all' | 'in' | 'out' | 'ai' | 'receipts' | 'auto';
+type Filter = 'review' | 'income' | 'costs' | 'notbusiness' | 'all' | 'in' | 'out' | 'receipts' | 'auto';
 
 /** Filters you rarely need, kept behind "More" so the everyday four stay clear. */
-const MORE_FILTERS: readonly Filter[] = ['in', 'out', 'receipts', 'auto', 'ai'];
-
-// Least certain first, so the ones worth a real look come to the top.
-const CONF: Record<string, number> = { low: 0, medium: 1, high: 2 };
+const MORE_FILTERS: readonly Filter[] = ['in', 'out', 'receipts', 'auto'];
 
 export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; toSort: number }) {
   const data = app.data!;
@@ -29,8 +24,6 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
   const [year, setYear] = useState<number | 'all'>(currentYear);
   const [q, setQ] = useState('');
   const [more, setMore] = useState(false);
-  const [doublesOpen, setDoublesOpen] = useState(false);
-  const check = checkCounts(app);
   const [openId, setOpenId] = useState<string | null>(null);
   const streams = new Map(data.streams.map((s) => [s.id, s]));
 
@@ -46,16 +39,11 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
       if (filter === 'in' && t.direction !== 'in') return false;
       if (filter === 'out' && t.direction !== 'out') return false;
       if (filter === 'receipts' && !needsReceipt(t, data.settings)) return false;
-      if (filter === 'ai' && t.classifiedBy !== 'ai') return false;
       if (filter === 'auto' && t.classifiedBy !== 'rule' && t.classifiedBy !== 'cstl' && t.classifiedBy !== 'import' && t.classifiedBy !== 'invoice') return false;
       if (needle && !`${t.counterparty} ${t.reference} ${t.note}`.toLowerCase().includes(needle) && !(t.amountPence / 100).toFixed(2).includes(needle)) return false;
       return true;
-    }).sort((a, b) =>
-      filter === 'ai' ? CONF[a.meta.aiConfidence ?? 'low']! - CONF[b.meta.aiConfidence ?? 'low']! : 0);
+    });
   }, [data, filter, year, q]);
-  const aiRows = data.transactions.filter((t) => t.classifiedBy === 'ai');
-  // Anything the AI has ever decided, confirmed or not — what "undo" can rewind.
-  const aiTouched = data.transactions.some((t) => t.meta.aiReason);
   const showMore = more || MORE_FILTERS.includes(filter);
 
   const open = data.transactions.find((t) => t.id === openId) ?? null;
@@ -67,15 +55,6 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
     : filter === 'in' ? { label: 'All money in', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
     : filter === 'out' ? { label: 'All money out', pence: rows.reduce((a, t) => a + t.amountPence, 0) }
     : null;
-  // What the AI will look at: unsorted lines, plus business lines still missing a stream.
-  const aiQueue = data.transactions.filter(
-    (t) =>
-      t.classifiedBy !== 'user' &&
-      t.classifiedBy !== 'ai' &&
-      !t.meta.aiTried &&
-      (t.bucket === 'unreviewed' || ((t.bucket === 'business_income' || t.bucket === 'business_expense') && (!t.streamId || t.meta.aiRestream === '1'))),
-  ).length;
-
   const years = [...new Set(data.transactions.map((t) => taxYearOf(t.date)))].sort((a, b) => b - a);
   if (!years.includes(currentYear)) years.unshift(currentYear);
 
@@ -87,43 +66,6 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
         <Button tone="primary" onClick={sort}>
           Sort {toSort} — one at a time
         </Button>
-      )}
-
-      {check.total > 0 && (
-        <Card onClick={() => setDoublesOpen(true)} style={{ borderColor: T.danger + '66' }}>
-          <Label color={T.danger}>Check for doubles</Label>
-          <div style={{ fontSize: 14, marginTop: 6 }}>{summary(check)} — tap to go through them</div>
-        </Card>
-      )}
-      {doublesOpen && <DoublesSheet app={app} onClose={() => setDoublesOpen(false)} />}
-
-      {app.aiProgress && (
-        <Card style={{ borderColor: T.accent + '66' }}>
-          <Label color={T.accent}>{app.aiProgress.photos ? 'AI reading your old receipt photos…' : 'AI sorting…'}</Label>
-          <div style={{ fontSize: 13, marginTop: 6 }}>
-            {app.aiProgress.photos
-              ? `${app.aiProgress.sorted} read · ${app.aiProgress.remaining} to go. Then it sorts. Keep this open.`
-              : `${app.aiProgress.sorted} sorted · about ${app.aiProgress.remaining} to go. Keep this open; it works in batches of 20, thinking each one through.`}
-          </div>
-        </Card>
-      )}
-      {filter === 'ai' && aiRows.length > 0 && (
-        <Card style={{ borderColor: T.green + '66' }}>
-          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
-            {aiRows.length} line{aiRows.length === 1 ? '' : 's'} sorted by AI, least certain first. Open any that look wrong and fix them; then confirm the rest.
-          </div>
-          <Button
-            tone="green"
-            style={{ marginTop: 10, width: '100%' }}
-            disabled={app.busy}
-            onClick={async () => {
-              if (!window.confirm(`Confirm all ${aiRows.length} AI-sorted lines as they are?`)) return;
-              await app.classifyMany(aiRows.map((t) => t.id), {});
-            }}
-          >
-            Looks right — confirm all {aiRows.length}
-          </Button>
-        </Card>
       )}
 
       {data.cstlBankUnlinked.length > 0 && (
@@ -234,26 +176,7 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
             <Chip active={filter === 'out'} onClick={() => setFilter('out')}>Money out</Chip>
             <Chip active={filter === 'receipts'} onClick={() => setFilter('receipts')}>Needs receipt</Chip>
             <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Sorted automatically</Chip>
-            {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
           </div>
-          <Button onClick={() => setDoublesOpen(true)}>🔍 Check for doubles{check.total ? ` (${check.total})` : ''}</Button>
-          {data.config.aiSort && aiQueue > 0 && !app.aiProgress && (
-            <Button onClick={app.aiSortAll} disabled={app.busy}>
-              🤖 Sort {aiQueue} with AI, then I’ll check
-            </Button>
-          )}
-          {aiTouched && !app.aiProgress && (
-            <Button
-              tone="quiet"
-              disabled={app.busy}
-              onClick={async () => {
-                if (!window.confirm('Undo the AI’s sorting? Every line it sorted goes back to how it was before — lines you changed by hand yourself stay as they are. You can run the AI again afterwards.')) return;
-                await app.aiUndo();
-              }}
-            >
-              ↩︎ Undo AI sorting
-            </Button>
-          )}
         </Card>
       )}
       <div style={{ display: 'flex', gap: 8 }}>

@@ -46,50 +46,11 @@ export async function mergeDouble(r: Repo, bankId: string, copyId: string): Prom
 }
 
 export const STATEMENT_REMOVED = 'statement:removed';
-export const IMPORT_REMOVED = 'import:removed';
 
 async function remember(r: Repo, key: string, ...ids: string[]): Promise<void> {
   const list = new Set((await r.getKv<string[]>(key)) ?? []);
   for (const id of ids) list.add(id);
   await r.setKv(key, [...list]);
-}
-
-/**
- * Old-app records the bank doesn't back up, and that you say aren't real money in these
- * accounts: removed, and remembered so importing the backup again doesn't bring them back.
- * Their receipts stay (in Receipts, unattached).
- */
-export async function removeOldRecords(r: Repo, ids: readonly string[]): Promise<number> {
-  const gone: string[] = [];
-  for (const id of ids) {
-    const t = await r.getTransaction(id);
-    if (!t || t.source !== 'import') continue;
-    await r.deleteTransaction(t.id);
-    if (t.sourceId) gone.push(t.sourceId);
-  }
-  if (gone.length) await remember(r, IMPORT_REMOVED, ...gone);
-  return gone.length;
-}
-
-/** Old-app records you confirm were paid in cash: real income, kept, not asked about again. */
-export async function keepAsCash(r: Repo, ids: readonly string[]): Promise<number> {
-  let kept = 0;
-  for (const id of ids) {
-    const t = await r.getTransaction(id);
-    if (!t || t.source !== 'import') continue;
-    await r.updateTransaction(t.id, { note: t.note.replace(/^Imported from Honey — not found in the bank feed.*$/, 'Cash (from the old app)') || t.note, meta: { cashConfirmed: '1' } });
-    kept++;
-  }
-  return kept;
-}
-
-/** "Not the same money": this pair isn't offered again. */
-export async function keepBoth(r: Repo, bankId: string, copyId: string): Promise<void> {
-  const copy = await r.getTransaction(copyId);
-  if (!copy) throw new Error('That line no longer exists');
-  const list = new Set((copy.meta.notDoubleOf ?? '').split(',').filter(Boolean));
-  list.add(bankId);
-  await r.updateTransaction(copy.id, { meta: { notDoubleOf: [...list].join(',') } });
 }
 
 /** After new bank lines arrive: merge the old-app copies that are certainly the same money. */

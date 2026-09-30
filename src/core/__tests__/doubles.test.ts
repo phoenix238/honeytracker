@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { certainDoubles, copyKind, findDoubles, ownMoneyAsIncome, unbackedOldRecords } from '../doubles.js';
+import { certainDoubles, findDoubles } from '../doubles.js';
 import { txn } from './fixtures.js';
 
 const bank = (over = {}) => txn({ source: 'starling', direction: 'in', amountPence: 6000, date: '2026-05-10', counterparty: 'LARA BLIGH', ...over });
@@ -14,8 +14,6 @@ describe('the same money counted twice', () => {
     const pairs = findDoubles([b, c, cash, b2]);
     expect(pairs.map((d) => [d.bank.id, d.copy.id])).toEqual([[b.id, c.id], [b2.id, cash.id]]);
     expect(pairs[0]).toMatchObject({ days: 4, exact: true, alone: true });
-    expect(copyKind(c)).toBe('Old app record');
-    expect(copyKind(cash)).toBe('CSTL: paid in cash');
   });
 
   it('leaves alone what isn’t double counting', () => {
@@ -50,19 +48,8 @@ describe('the same money counted twice', () => {
     const [d] = findDoubles([file, live]);
     expect(d).toMatchObject({ kind: 'statement' });
     expect(d!.bank.id).toBe(live.id);
-    expect(copyKind(file)).toBe('Statement file (Starling CSV)');
     expect(certainDoubles([file, live])).toHaveLength(1);
     expect(findDoubles([file, bank({ source: 'starling', counterparty: 'Someone Else' })])).toEqual([]); // different payer
-  });
-
-  it('lists old-app records nothing in the bank backs up — from when the bank history starts, cash ones kept', () => {
-    const b = bank({ date: '2026-04-06', amountPence: 1 });
-    const lone = oldApp({ amountPence: 7500, date: '2026-05-01' });
-    const before = oldApp({ amountPence: 7500, date: '2026-03-01' });
-    const cash = oldApp({ amountPence: 7500, date: '2026-05-02', meta: { cashConfirmed: '1' } });
-    const matched = oldApp({ amountPence: 6000, date: '2026-05-10' });
-    const b2 = bank({ date: '2026-05-10' });
-    expect(unbackedOldRecords([b, b2, lone, before, cash, matched]).map((t) => t.id)).toEqual([lone.id]);
   });
 
   it('uses each line once, closest dates first, and remembers “two payments”', () => {
@@ -82,16 +69,5 @@ describe('the same money counted twice', () => {
     expect(certainDoubles([b, oldApp({ amountPence: 6001 })])).toHaveLength(0); // a penny out: ask
     expect(certainDoubles([b, bank({ date: '2026-05-08' }), oldApp()])).toHaveLength(0); // two it could be: ask
     expect(certainDoubles([b, txn({ source: 'cstl', amountPence: 6000, date: '2026-05-10', bucket: 'business_income' })])).toHaveLength(0); // not the old app: ask
-  });
-});
-
-describe('your own money counted as income', () => {
-  it('flags money in from you, not a client who put your name in the reference', () => {
-    const me = ['Phoenix Tanner'];
-    const fromMonzo = bank({ counterparty: 'PHOENIX TANNER', bucket: 'business_income' });
-    const client = bank({ counterparty: 'Lara Bligh', reference: 'Phoenix Tanner session', bucket: 'business_income' });
-    const sorted = bank({ counterparty: 'Phoenix Tanner', bucket: 'transfer' });
-    expect(ownMoneyAsIncome([fromMonzo, client, sorted], me).map((t) => t.id)).toEqual([fromMonzo.id]);
-    expect(ownMoneyAsIncome([fromMonzo], [])).toEqual([]);
   });
 });
