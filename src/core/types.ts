@@ -110,6 +110,10 @@ export interface Receipt {
   vatPence: Pence | null;
   suggestedCategory: ExpenseCategory | null;
   description: string;
+  /** Which of your streams the reader thinks it's for, from what you've said about your work. */
+  suggestedStreamId?: string | null;
+  /** One line on why it's a cost of your work — goes into the note of the line it's attached to. */
+  why?: string;
   /** The ledger row it evidences, once matched. */
   transactionId: string | null;
   /**
@@ -243,6 +247,11 @@ export interface Settings {
   setAsidePercent: number | null;
   /** Your calendar's private iCal link, read to turn sessions and shifts into invoice lines. */
   calendarUrl: string;
+  /**
+   * You and your work, in your own words — what you do, what you buy for it, what's personal.
+   * Every AI read (receipts, Sort with AI) gets it, so it judges costs the way you would.
+   */
+  aboutMe: string;
 }
 
 export const DEFAULT_TAX_YEAR_FACTS: TaxYearFacts = {
@@ -261,6 +270,7 @@ export const DEFAULT_SETTINGS: Settings = {
   cstlStreamId: null,
   setAsidePercent: 20,
   calendarUrl: '',
+  aboutMe: '',
 };
 
 export function factsFor(settings: Settings, taxYear: number): TaxYearFacts {

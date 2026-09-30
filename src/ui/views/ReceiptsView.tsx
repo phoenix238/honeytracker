@@ -165,6 +165,7 @@ function ReceiptSheet({ app, receipt, onClose }: { app: App; receipt: Receipt; o
   const [date, setDate] = useState(receipt.date ?? '');
   const [amount, setAmount] = useState(receipt.totalPence != null ? formatAmount(receipt.totalPence) : '');
   const [category, setCategory] = useState(receipt.suggestedCategory ?? 'otherExpenses');
+  const [why, setWhy] = useState(receipt.why ?? '');
   const [streamId, setStreamId] = useState<string | null>(streams[0]?.id ?? null);
   const [viewing, setViewing] = useState(false);
   const draft: Receipt = { ...receipt, date: date || null, totalPence: amount ? parsePence(amount) : null };
@@ -172,7 +173,7 @@ function ReceiptSheet({ app, receipt, onClose }: { app: App; receipt: Receipt; o
   const linked = data.transactions.find((t) => t.id === receipt.transactionId);
 
   const saveFields = () =>
-    app.updateReceipt(receipt.id, { merchant, date: date || null, totalPence: amount ? parsePence(amount) : null, suggestedCategory: category });
+    app.updateReceipt(receipt.id, { merchant, date: date || null, totalPence: amount ? parsePence(amount) : null, suggestedCategory: category, why: why.trim() });
 
   return (
     <Sheet open onClose={onClose} title={receipt.merchant || 'Receipt'}>
@@ -193,6 +194,9 @@ function ReceiptSheet({ app, receipt, onClose }: { app: App; receipt: Receipt; o
         <select style={inputStyle} value={category} onChange={(e) => setCategory(e.target.value as typeof category)}>
           {CATEGORIES.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
         </select>
+      </Field>
+      <Field label="Why it’s a business cost" hint="Goes into the note of the bank line it’s attached to, when that line has none.">
+        <input style={inputStyle} value={why} onChange={(e) => setWhy(e.target.value)} placeholder="e.g. Fuel driving to a client's home" />
       </Field>
       <Button onClick={saveFields} disabled={app.busy}>Save details</Button>
 

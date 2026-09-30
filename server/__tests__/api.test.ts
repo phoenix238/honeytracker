@@ -916,6 +916,30 @@ describe('sorting in batches, and undo', () => {
   });
 });
 
+describe('what you tell the AI about yourself', () => {
+  it('is saved, read before every receipt, and a receipt’s stream and reason carry onto its bank line', async () => {
+    await signIn();
+    const cst = (await call('POST', '/api/streams', { name: 'Craniosacral therapy', about: 'Home visits to private clients' })).data;
+    await call('POST', '/api/streams', { name: 'Coffee' });
+    const aboutMe = 'Most payments on my Starling card are for my work. Petrol is for driving to clients.';
+    expect((await call('PUT', '/api/settings', { aboutMe })).data.aboutMe).toBe(aboutMe);
+    const t = (await call('POST', '/api/transactions', { date: thisYear(), amountPence: 4550, direction: 'out', counterparty: 'SHELL 334', bucket: 'unreviewed' })).data;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    let sent = '';
+    aiReply = (prompt) => {
+      sent = prompt;
+      return { merchant: 'Shell', date: thisYear(), total: '45.50', vat: '7.58', currency: 'GBP', category: 'carVanTravelExpenses', description: 'Fuel', why: 'Fuel driving to clients’ homes', streamId: cst.id };
+    };
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
+    const up = (await call('POST', '/api/receipts', { filename: 'shell.png', mime: 'image/png', dataBase64: png, transactionId: t.id })).data;
+    expect(sent).toContain('Most payments on my Starling card are for my work');
+    expect(sent).toContain('Home visits to private clients');
+    expect(up.receipt).toMatchObject({ suggestedStreamId: cst.id, why: 'Fuel driving to clients’ homes' });
+    const after = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === t.id);
+    expect(after).toMatchObject({ bucket: 'business_expense', streamId: cst.id, category: 'carVanTravelExpenses', note: 'Fuel driving to clients’ homes' });
+  });
+});
+
 describe('other banks and spreadsheets', () => {
   const lines = [
     { sourceId: 'tx_1', date: thisYear(), amountPence: 2000, direction: 'out', counterparty: 'WHR Consulting Ltd', reference: '', ownMove: false, bankType: 'Faster payment', bankCategory: 'Bills' },

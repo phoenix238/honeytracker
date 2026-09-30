@@ -104,6 +104,13 @@ describe('what a swipe would do', () => {
     expect(p.right.category).toBe('advertisingCosts');
     expect(predict({ ...t, direction: 'in' }, ctx({ receipts: [r({})] })).receipt).toBeNull();
   });
+  it('takes the stream and the reason from what the receipt reader made of it', () => {
+    const t = txn({ direction: 'out', amountPence: 4550, date: '2026-09-27', counterparty: 'SHELL 334' });
+    const receipt = { id: 'r', uploadedAt: '', filename: 'p.jpg', mime: 'image/jpeg', merchant: 'Shell', date: '2026-09-27', totalPence: 4550, vatPence: null, suggestedCategory: 'carVanTravelExpenses' as const, description: '', transactionId: null, suggestedStreamId: 'practice', why: 'Fuel to clients' };
+    const p = predict(t, ctx({ receipts: [receipt], lastStreamId: 'coffee' }));
+    expect(p.right).toMatchObject({ streamId: 'practice', category: 'carVanTravelExpenses' });
+    expect(p.why).toBe('Fuel to clients');
+  });
   it('guesses the stream and category from what you did last time for the same payee', () => {
     const before = txn({ counterparty: 'WHR Consulting Ltd', direction: 'out', bucket: 'business_expense', streamId: 'practice', category: 'premisesRunningCosts', classifiedBy: 'user' });
     const p = predict(txn({ counterparty: 'WHR CONSULTING LTD', direction: 'out' }), ctx({ history: [before] }));

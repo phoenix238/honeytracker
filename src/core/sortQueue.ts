@@ -114,6 +114,8 @@ export interface Prediction {
   looksLikeWages: boolean;
   /** An unattached receipt (emailed or snapped) that matches this line, to attach with the swipe. */
   receipt: Receipt | null;
+  /** Why it's a cost of your work, from its receipt — written into the note when swiped as business. */
+  why: string;
 }
 
 export interface PredictContext {
@@ -138,15 +140,20 @@ export function predict(t: Transaction, ctx: PredictContext): Prediction {
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
     : undefined;
 
+  const attachedAny = ctx.receipts.find((r) => r.transactionId === t.id);
+  const found0 = t.receiptIds.length ? null : receiptsFor(t, ctx.receipts)[0] ?? null;
+  const readStream = (attachedAny ?? found0)?.suggestedStreamId ?? null;
   const stream =
     (t.streamId && activeIds.has(t.streamId) ? t.streamId : null) ??
     (active.length === 1 ? active[0]!.id : null) ??
+    // The receipt reader, knowing what you've said about your work, named the stream.
+    (t.direction === 'out' && readStream && activeIds.has(readStream) ? readStream : null) ??
     (past?.streamId && activeIds.has(past.streamId) ? past.streamId : null) ??
     (t.meta.cstlBookingId && ctx.settings.cstlStreamId && activeIds.has(ctx.settings.cstlStreamId) ? ctx.settings.cstlStreamId : null) ??
     (ctx.lastStreamId && activeIds.has(ctx.lastStreamId) ? ctx.lastStreamId : null);
 
   const attached = ctx.receipts.find((r) => r.transactionId === t.id && r.suggestedCategory);
-  const found = t.receiptIds.length ? null : receiptsFor(t, ctx.receipts)[0] ?? null;
+  const found = found0;
   const category: ExpenseCategory | null =
     t.direction === 'out'
       ? (t.bucket === 'business_expense' ? t.category : null) ??
@@ -161,5 +168,6 @@ export function predict(t: Transaction, ctx: PredictContext): Prediction {
     left: { bucket: 'personal', streamId: null, category: null },
     looksLikeWages: t.direction === 'in' && WAGES.test(`${t.counterparty} ${t.reference}`),
     receipt: found,
+    why: t.direction === 'out' ? (attachedAny ?? found)?.why || '' : '',
   };
 }

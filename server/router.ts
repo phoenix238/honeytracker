@@ -3,7 +3,7 @@ import { repo as makeRepo, type Repo, type NewTransaction } from './repo.js';
 import { AuthConfigError, checkPassword, clearCookie, isCron, isSignedIn, sessionCookie } from './auth.js';
 import { runSync, cstlConfigured, type SyncResult } from './sync.js';
 import { starlingTokens } from './starling.js';
-import { extractReceipt, receiptsAiConfigured } from './receipts.js';
+import { extractReceipt, receiptsAiConfigured, type ReadContext } from './receipts.js';
 import { FILE_TYPES, dropGoogleToken, googleConnected, isGoogleScript, newGoogleToken, takeFoundItem, type FoundItem } from './google.js';
 import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
@@ -170,6 +170,12 @@ function invoiceDraft(b: Record<string, unknown>, current?: Invoice, terms = 14)
     notes: b.notes !== undefined ? str(b.notes, 1000) : current?.notes ?? '',
     status: (current?.status ?? 'draft') as Invoice['status'],
   };
+}
+
+/** What the AI readers are told about you: your own words, your kinds of work, your names. */
+async function readContext(r: Repo): Promise<ReadContext> {
+  const [settings, streams] = await Promise.all([r.getSettings(), r.listStreams()]);
+  return { aboutMe: settings.aboutMe, streams, self: [settings.profile.name || settings.name, settings.profile.businessName].filter(Boolean) };
 }
 
 function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessProfile): BusinessProfile {
@@ -469,6 +475,7 @@ const routes: [string, RegExp, Handler][] = [
       taxYears,
       setAsidePercent: b.setAsidePercent !== undefined ? setAside(b.setAsidePercent) : current.setAsidePercent,
       calendarUrl: b.calendarUrl !== undefined ? calendarLink(b.calendarUrl) : current.calendarUrl,
+      aboutMe: b.aboutMe !== undefined ? str(b.aboutMe, 3000) : current.aboutMe,
     };
     await r.saveSettings(next);
     return json(next);
@@ -485,7 +492,7 @@ const routes: [string, RegExp, Handler][] = [
     let readError = '';
     if (receiptsAiConfigured()) {
       try {
-        extracted = await extractReceipt(mime, data);
+        extracted = await extractReceipt(mime, data, undefined, await readContext(r));
       } catch (e) {
         readError = (e as Error).message.slice(0, 200);
       }
@@ -501,6 +508,8 @@ const routes: [string, RegExp, Handler][] = [
         totalPence: extracted?.totalPence ?? null,
         vatPence: extracted?.vatPence ?? null,
         suggestedCategory: extracted?.category ?? null,
+        suggestedStreamId: extracted?.streamId ?? null,
+        why: extracted?.why ?? '',
         description: extracted?.description ?? '',
         transactionId: txnId,
       },
@@ -519,8 +528,11 @@ const routes: [string, RegExp, Handler][] = [
       if (t && t.bucket === 'unreviewed' && receipt.suggestedCategory) {
         // With only one stream there's nothing to ask — without it the row came back as "no stream".
         const active = (await r.listStreams()).filter((st) => !st.archived);
-        const streamId = active.length === 1 ? active[0]!.id : t.streamId;
-        await r.updateTransaction(t.id, { bucket: 'business_expense', category: receipt.suggestedCategory, streamId, classifiedBy: 'rule' });
+        const suggested = active.find((st) => st.id === receipt.suggestedStreamId)?.id;
+        const streamId = active.length === 1 ? active[0]!.id : suggested ?? t.streamId;
+        // Why it's a cost of your work, as the reader put it, becomes the line's note.
+        const note = t.note || receipt.why || '';
+        await r.updateTransaction(t.id, { bucket: 'business_expense', category: receipt.suggestedCategory, streamId, note, classifiedBy: 'rule' });
       }
     }
     return json({ receipt: await r.getReceipt(receipt.id), matchedTransactionId: linkedId, readError, read: Boolean(extracted) }, 201);
@@ -550,6 +562,8 @@ const routes: [string, RegExp, Handler][] = [
     if (b.suggestedCategory !== undefined) patch.suggestedCategory = isCategory(b.suggestedCategory) ? b.suggestedCategory : null;
     if (b.description !== undefined) patch.description = str(b.description, 500);
     if (b.notNeeded !== undefined) patch.notNeeded = b.notNeeded === true;
+    if (b.why !== undefined) patch.why = str(b.why, 200);
+    if (b.suggestedStreamId !== undefined) patch.suggestedStreamId = b.suggestedStreamId ? str(b.suggestedStreamId, 64) : null;
     const updated = await r.updateReceipt(id!, patch);
     if (!updated) throw new HttpError(404, 'Not found');
     return json(updated);
@@ -574,7 +588,7 @@ const routes: [string, RegExp, Handler][] = [
     const t = await r.insertTransaction({
       date, amountPence, direction: 'out', source: 'cash', sourceId: null, counterparty: receipt.merchant, reference: '',
       bucket: 'business_expense', streamId: b.streamId ? str(b.streamId, 64) : null, category, businessPercent: 100,
-      note: receipt.description, classifiedBy: 'user', meta: { paidWith: str(b.paidWith, 40) || 'cash' },
+      note: receipt.why || receipt.description, classifiedBy: 'user', meta: { paidWith: str(b.paidWith, 40) || 'cash' },
     });
     if (!t) throw new HttpError(500, 'Not saved');
     await r.updateReceipt(receipt.id, { transactionId: t.id });
@@ -689,7 +703,7 @@ const routes: [string, RegExp, Handler][] = [
     const batch = waiting.slice(0, AI_SORT_BATCH);
     if (!batch.length) return json({ sorted: 0, skipped: 0, remaining: 0 });
     const [streams, rules, receipts] = await Promise.all([r.listStreams(), r.listRules(), r.listReceipts()]);
-    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all, 80, batch), receipts);
+    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all, 80, batch), receipts, (await r.getSettings()).aboutMe);
     let sorted = 0;
     for (const d of decisions) {
       const current = all.find((t) => t.id === d.id);
@@ -716,12 +730,13 @@ const routes: [string, RegExp, Handler][] = [
     if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI reading.');
     const unread = (await r.listReceipts()).filter((x) => x.description === IMPORTED_UNREAD);
     const batch = unread.slice(0, 4);
+    const ctx = await readContext(r);
     const results = await Promise.all(batch.map(async (rc) => {
       const file = await r.getReceiptFile(rc.id);
-      const got = file ? await extractReceipt(rc.mime, file.data.toString('base64')).catch(() => null) : null;
+      const got = file ? await extractReceipt(rc.mime, file.data.toString('base64'), undefined, ctx).catch(() => null) : null;
       const shows = got ? [got.merchant, got.description].filter(Boolean).join(' — ') : '';
       await r.updateReceipt(rc.id, got && shows
-        ? { description: `Photo shows: ${shows.slice(0, 280)}`, suggestedCategory: rc.suggestedCategory ?? got.category, vatPence: rc.vatPence ?? got.vatPence }
+        ? { description: `Photo shows: ${shows.slice(0, 280)}`, suggestedCategory: rc.suggestedCategory ?? got.category, vatPence: rc.vatPence ?? got.vatPence, suggestedStreamId: got.streamId, why: got.why }
         : { description: `${IMPORTED_UNREAD} (photo unreadable)` });
       return Boolean(got && shows);
     }));

@@ -69,14 +69,14 @@ const line = (t: Transaction, receipts: readonly Receipt[] = []) =>
     t.meta.importedFrom && t.source !== 'import' ? 'also recorded in their old app' : '',
     t.note && !SYSTEM_NOTE.test(t.note) ? `their description: "${clip(t.note, 200)}"` : '',
     ...receipts.map((r) =>
-      `receipt: ${[r.merchant, r.description.startsWith('Imported from Honey') ? '' : r.description, r.suggestedCategory ? `looks like ${r.suggestedCategory}` : ''].filter(Boolean).join(', ') || 'attached'}`,
+      `receipt: ${[r.merchant, r.description.startsWith('Imported from Honey') ? '' : r.description, r.suggestedCategory ? `looks like ${r.suggestedCategory}` : '', r.why ? `for: ${r.why}` : ''].filter(Boolean).join(', ') || 'attached'}`,
     ),
     t.bucket !== 'unreviewed' ? `already known: ${t.bucket.replace('_', ' ')}${t.category ? ` (${t.category})` : ''} — needs a stream` : '',
   ]
     .filter(Boolean)
     .join(' | ');
 
-function buildPrompt(batch: Transaction[], streams: Stream[], rules: Rule[], examples: Transaction[], receipts: readonly Receipt[]): string {
+function buildPrompt(batch: Transaction[], streams: Stream[], rules: Rule[], examples: Transaction[], receipts: readonly Receipt[], aboutMe = ''): string {
   const streamList = streams
     .filter((s) => !s.archived)
     .map((s) => `- ${s.id}: "${s.name}" (${s.kind === 'other' ? 'tracked, not self-employment' : 'self-employment'})${s.about ? ` — ${clip(s.about, 600)}` : ''}`);
@@ -100,7 +100,12 @@ Some rows are already known to be business income or costs (the person recorded 
 Their own description of a line, and what's on its receipt, are the best evidence of what it was for — weigh them above the bank's payee name. Match each stream against its description above. Where they've sorted the same payee or payer before, follow that unless the details clearly differ.
 
 When unsure whether something is business, prefer personal with low confidence — claiming a personal cost as business is the more harmful mistake. Money arriving from a person or company that isn't the account holder, especially with an invoice number or reference, is usually business income.
-
+${aboutMe.trim() ? `
+What they've told you about themselves and their work comes first — where it says how they use this account (for example that most card spending is for the work), follow it over the general guidance above, and say in the reason which work a cost is for:
+<about>
+${clip(aboutMe.trim(), 3000)}
+</about>
+` : ''}
 Income streams:
 ${streamList.join('\n') || '- (none set up yet — use "")'}
 
@@ -120,6 +125,7 @@ export async function aiSortBatch(
   rules: Rule[],
   examples: Transaction[],
   receipts: readonly Receipt[] = [],
+  aboutMe = '',
   client = anthropicClient(),
 ): Promise<AiDecision[]> {
   if (!batch.length) return [];
@@ -129,7 +135,7 @@ export async function aiSortBatch(
     max_tokens: 16000,
     // Getting a tax record wrong costs more than the extra thinking: high effort.
     output_config: { effort: 'high', format: betaJSONSchemaOutputFormat(schema(streamIds)) },
-    messages: [{ role: 'user', content: buildPrompt(batch, streams, rules, examples, receipts) }],
+    messages: [{ role: 'user', content: buildPrompt(batch, streams, rules, examples, receipts, aboutMe) }],
   });
   if (response.stop_reason === 'refusal' || !response.parsed_output) {
     throw new Error(response.stop_reason === 'max_tokens' ? 'The AI ran out of room on this batch — try again.' : 'The AI declined this batch.');

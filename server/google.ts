@@ -76,9 +76,9 @@ export async function takeFoundItem(r: Repo, item: FoundItem): Promise<{ outcome
       ? `From: ${item.from}\nSubject: ${item.subject}\nDate: ${item.date}\n\n${item.text}`
       : item.text;
   // Throws on an API failure, so the item isn't marked seen and the script sends it again later.
-  const { profile, name } = await r.getSettings();
+  const [{ profile, name, aboutMe }, streams] = await Promise.all([r.getSettings(), r.listStreams()]);
   const self = [profile.name || name, profile.businessName].filter(Boolean);
-  const doc = await readFoundDoc({ mime: item.file?.mime, dataBase64: item.file?.dataBase64, emailText: emailText.trim() || undefined, self });
+  const doc = await readFoundDoc({ mime: item.file?.mime, dataBase64: item.file?.dataBase64, emailText: emailText.trim() || undefined }, undefined, { aboutMe, streams, self });
 
   let outcome: Outcome;
   let receipt: Receipt | null = null;
@@ -102,6 +102,8 @@ export async function takeFoundItem(r: Repo, item: FoundItem): Promise<{ outcome
         totalPence: doc.totalPence,
         vatPence: doc.vatPence,
         suggestedCategory: doc.category,
+        suggestedStreamId: doc.streamId,
+        why: doc.why,
         description: [doc.description, item.source === 'gmail' ? `(from Gmail: ${item.subject.slice(0, 80)})` : '(from Google Drive)'].filter(Boolean).join(' '),
         transactionId: null,
       },

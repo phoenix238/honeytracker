@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
 import { doubtAbout, extractReceipt, issuedBySelf, readFoundDoc } from '../receipts';
 
@@ -29,7 +29,44 @@ afterEach(() => {
   delete process.env.RECEIPT_CHECK_MODEL;
 });
 
-describe('reading receipts, cheapest first', () => {
+describe('reading receipts', () => {
+  it('reads each one once with Sonnet by default', async () => {
+    const { client, calls } = fakeClient({ 'claude-sonnet-5-5': { ...good, total: '' } });
+    expect((await extractReceipt('image/png', png, client))?.merchant).toBe('Shell');
+    expect(calls.map((c) => c.model)).toEqual(['claude-sonnet-5-5']); // no second read unless one is set
+    expect((calls[0]!.params.output_config as Record<string, unknown>).effort).toBe('medium');
+  });
+
+  it('knows who you are: your words and your kinds of work, and says which work a cost is for and why', async () => {
+    const streams = [
+      { id: 'cst', name: 'Craniosacral therapy', about: 'Private clients at home', archived: false, kind: 'self_employment' as const },
+      { id: 'coffee', name: 'Coffee', about: 'Barista shifts at Ethical Caff', archived: false, kind: 'self_employment' as const },
+      { id: 'old', name: 'Old', about: '', archived: true, kind: 'self_employment' as const },
+    ];
+    const aboutMe = 'Most payments on my Starling card are for my work. I drive to clients’ homes.';
+    const { client, calls } = fakeClient({ 'claude-sonnet-5-5': { ...good, streamId: 'cst', why: 'Fuel driving to clients’ homes' } });
+    const r = await extractReceipt('image/png', png, client, { aboutMe, streams });
+    expect(r).toMatchObject({ streamId: 'cst', why: 'Fuel driving to clients’ homes' });
+    const sent = JSON.stringify(calls[0]!.params.messages);
+    expect(sent).toContain('Most payments on my Starling card are for my work');
+    expect(sent).toContain('cst: \\"Craniosacral therapy\\" — Private clients at home');
+    expect(sent).not.toContain('Old');
+    // The streams it may choose from are the active ones (the SDK spells the list out in the schema).
+    const schema = JSON.stringify(calls[0]!.params.output_config);
+    expect(schema).toMatch(/streamId.*cst.*coffee/);
+    expect(schema).not.toMatch(/streamId[^}]*old/);
+    // A stream it made up is dropped.
+    const odd = fakeClient({ 'claude-sonnet-5-5': { ...good, streamId: 'nope', why: '' } });
+    expect((await extractReceipt('image/png', png, odd.client, { streams }))?.streamId).toBeNull();
+  });
+});
+
+describe('an optional cheap first read, with a stronger one for doubtful answers', () => {
+  beforeEach(() => {
+    process.env.RECEIPT_MODEL = 'claude-haiku-4-5';
+    process.env.RECEIPT_CHECK_MODEL = 'claude-sonnet-5-5';
+  });
+
   it('keeps Haiku’s answer when it adds up, and never asks the dearer model', async () => {
     const { client, calls } = fakeClient({ 'claude-haiku-4-5': good });
     const r = await extractReceipt('image/png', png, client);
@@ -44,7 +81,7 @@ describe('reading receipts, cheapest first', () => {
     const { client, calls } = fakeClient({ 'claude-haiku-4-5': { ...good, total: '' }, 'claude-sonnet-5-5': good });
     expect((await extractReceipt('image/png', png, client))?.totalPence).toBe(4550);
     expect(calls.map((c) => c.model)).toEqual(['claude-haiku-4-5', 'claude-sonnet-5-5']);
-    expect((calls[1]!.params.output_config as Record<string, unknown>).effort).toBe('low');
+    expect((calls[1]!.params.output_config as Record<string, unknown>).effort).toBe('medium');
   });
 
   it('falls back to Sonnet when Haiku fails outright', async () => {
@@ -70,9 +107,9 @@ describe('reading receipts, cheapest first', () => {
     expect(textOnly.calls).toHaveLength(1);
   });
 
-  it('either model can be swapped in Vercel', async () => {
+  it('with the same model for both, reads once', async () => {
     process.env.RECEIPT_MODEL = 'claude-sonnet-5-5';
-    const { client, calls } = fakeClient({ 'claude-sonnet-5-5': good });
+    const { client, calls } = fakeClient({ 'claude-sonnet-5-5': { ...good, total: '' } });
     await extractReceipt('image/png', png, client);
     expect(calls.map((c) => c.model)).toEqual(['claude-sonnet-5-5']);
   });
@@ -103,8 +140,8 @@ describe('your own invoices are income, not receipts', () => {
   });
   it('tells the reader who you are, and overrules it if it still calls your invoice a purchase', async () => {
     const mine = { kind: 'purchase', ...good, merchant: 'Phoenix Tanner' };
-    const { client, calls } = fakeClient({ 'claude-haiku-4-5': mine });
-    const doc = await readFoundDoc({ mime: 'application/pdf', dataBase64: png, self: ['Phoenix Tanner'] }, client);
+    const { client, calls } = fakeClient({ 'claude-sonnet-5-5': mine });
+    const doc = await readFoundDoc({ mime: 'application/pdf', dataBase64: png }, client, { self: ['Phoenix Tanner'] });
     expect(doc?.kind).toBe('income');
     expect(JSON.stringify(calls[0]!.params.messages)).toContain('The person is Phoenix Tanner');
   });

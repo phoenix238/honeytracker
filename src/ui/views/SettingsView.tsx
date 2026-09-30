@@ -17,6 +17,7 @@ export function SettingsView({ app }: { app: App }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
       <Title>Settings</Title>
+      <AboutMeSection app={app} />
 
       <Group title="You & invoices">
         <ProfileSection app={app} />
@@ -51,6 +52,49 @@ export function SettingsView({ app }: { app: App }) {
 
       <Button tone="danger" onClick={app.signOut}>Sign out</Button>
     </div>
+  );
+}
+
+/**
+ * You and your work, in your own words. The receipt reader and Sort with AI both read it, so
+ * they judge a payment the way you would: which work it's for, and why it's a cost of it.
+ */
+function AboutMeSection({ app }: { app: App }) {
+  const data = app.data!;
+  const [text, setText] = useState(data.settings.aboutMe);
+  const saved = text === data.settings.aboutMe;
+  const active = data.streams.filter((s) => !s.archived && s.kind !== 'other');
+  const draft = [
+    `I'm ${data.settings.profile.name || data.settings.name || '[your name]'}, a self-employed sole trader in the UK. My kinds of work:`,
+    ...active.map((s) => `- ${s.name}: ${s.about || '[who pays me, and what I buy for it]'}`),
+    '',
+    'Most payments on my Starling card are for my work — for example: [what you usually buy, and for which work].',
+    'Things that are always personal: [e.g. supermarket food shops, rent, subscriptions for me].',
+  ].join('\n');
+  return (
+    <Section title="About you and your work">
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+          The AI reads this before every receipt (Gmail, Drive and your photos) and every “Sort with AI”, so it knows what you do, what you buy for each kind of work, and why a
+          payment is a business cost. Write it the way you’d explain it to your accountant.
+        </div>
+        <textarea
+          style={{ ...inputStyle, minHeight: 170, lineHeight: 1.5 }}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="e.g. I'm a craniosacral therapist; I also do barista shifts at Ethical Caff (invoiced), filming and photos, and odd jobs. Most payments on my Starling card are for work: petrol to clients and shifts, Facebook ads, couch roll and oils…"
+          aria-label="About you and your work"
+        />
+        <div style={{ display: 'flex', gap: 8 }}>
+          {!text.trim() && (
+            <Button tone="quiet" onClick={() => setText(draft)} style={{ flex: 1 }}>Start from a draft</Button>
+          )}
+          <Button tone="primary" disabled={saved || app.busy} onClick={() => app.saveSettings({ aboutMe: text.trim() })} style={{ flex: 1 }}>
+            {saved ? 'Saved' : 'Save'}
+          </Button>
+        </div>
+      </Card>
+    </Section>
   );
 }
 

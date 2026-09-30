@@ -160,6 +160,16 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     return out;
   };
 
+  /**
+   * A business cost keeps the reason its receipt gives ("Fuel for Ethical Caff shifts") as its
+   * note — unless you've written one yourself.
+   */
+  const withWhy = <P extends { bucket: string }>(row: Transaction, patch: P, attachingId?: string): P & { note?: string } => {
+    if (patch.bucket !== 'business_expense' || row.note) return patch;
+    const why = data.receipts.find((x) => x.id === attachingId || x.transactionId === row.id)?.why;
+    return why ? { ...patch, note: why } : patch;
+  };
+
   const commit = (t: Transaction, decision: Decision, others: Transaction[], shownReceipt: Receipt | null, pays: Invoice | null = null) => {
     const batchId = mkId();
     const rows = [t, ...others];
@@ -191,7 +201,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
           batchId,
           items: rows.map((r) => ({
             id: r.id,
-            patch,
+            patch: withWhy(r, patch, receiptOf.get(r.id)),
             expectUpdatedAt: r.updatedAt,
             unlessYours: r.id !== t.id,
             ...(receiptOf.has(r.id) ? { attachReceiptIds: [receiptOf.get(r.id)!] } : {}),
@@ -440,13 +450,14 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
               </div>
               <Money pence={card.amountPence} signed={card.direction} color={card.direction === 'in' ? T.green : T.text} size={28} />
 
-              {card.receiptIds.length > 0 && <Hint>🧾 Receipt attached</Hint>}
+              {card.receiptIds.length > 0 && <Hint>🧾 Receipt attached{guess?.why ? ` — “${guess.why}”` : ''}</Hint>}
               {guess?.receipt && (
                 <label onPointerDown={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12, color: T.green, lineHeight: 1.5 }}>
                   <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} style={{ marginTop: 2 }} />
                   <span>
                     🧾 Found its receipt: {guess.receipt.merchant || guess.receipt.filename}
                     {guess.receipt.date ? ` · ${fmtDate(guess.receipt.date)}` : ''} · {receiptOrigin(guess.receipt)}.{' '}
+                    {guess.receipt.why ? `“${guess.receipt.why}”. ` : ''}
                     Attaches when you swipe it as business.
                   </span>
                 </label>
