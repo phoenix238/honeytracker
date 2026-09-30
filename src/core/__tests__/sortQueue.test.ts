@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findSimilar, needsDecision, orderQueue, predict, rulePattern, similarKey, type PredictContext } from '../sortQueue.js';
+import { findMatching, findSimilar, needsDecision, orderQueue, patternChoices, predict, rulePattern, similarKey, type PredictContext } from '../sortQueue.js';
 import { ruleMatches } from '../rules.js';
 import { DEFAULT_SETTINGS, type Stream } from '../types.js';
 import { txn } from './fixtures.js';
@@ -57,6 +57,23 @@ describe('rules made from a swipe', () => {
   it('drop the card processor, and refuse a pattern too short to be safe', () => {
     expect(rulePattern(txn({ counterparty: 'PAYPAL *ZOOM.US 888' }))?.pattern).toBe('zoom.us');
     expect(rulePattern(txn({ counterparty: '12345' }))).toBeNull();
+  });
+});
+
+describe('widening a match to every branch', () => {
+  it('offers the payee’s words one more at a time, never a vague word alone', () => {
+    expect(patternChoices(txn({ counterparty: 'LIDL GB BRISTOL 4471' }))).toEqual(['lidl', 'lidl gb', 'lidl gb bristol']);
+    expect(patternChoices(txn({ counterparty: 'THE WORKS 223' }))).toEqual(['the works']);
+    expect(patternChoices(txn({ counterparty: 'SQ *COFFEE HOUSE' }))).toEqual(['coffee', 'coffee house']);
+    expect(patternChoices(txn({ counterparty: 'Tesco' }))).toEqual(['tesco']);
+  });
+  it('finds every waiting row the chosen words would catch, going the same way', () => {
+    const card = txn({ counterparty: 'LIDL GB BRISTOL', direction: 'out' });
+    const bath = txn({ counterparty: 'LIDL GB BATH', direction: 'out' });
+    const refund = txn({ counterparty: 'LIDL GB BATH', direction: 'in' });
+    const other = txn({ counterparty: 'ALDI STORES', direction: 'out' });
+    expect(findSimilar(card, [bath, refund, other])).toEqual([]); // different branch: not "the same payee"
+    expect(findMatching(card, [card, bath, refund, other], { field: 'counterparty', pattern: 'lidl' }).map((t) => t.id)).toEqual([bath.id]);
   });
 });
 

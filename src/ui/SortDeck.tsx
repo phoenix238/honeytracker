@@ -4,7 +4,7 @@ import { receiptOrigin, receiptsFor } from '../core/receiptMatch';
 import { invoiceGuess, invoiceTotal, paidDifference } from '../core/invoices';
 import { formatGBP } from '../core/money';
 import { QUICK_CATEGORIES, categoryInfo } from '../core/hmrc';
-import { findSimilar, needsDecision, orderQueue, predict, rulePattern, type Decision } from '../core/sortQueue';
+import { findMatching, findSimilar, needsDecision, orderQueue, patternChoices, predict, rulePattern, type Decision } from '../core/sortQueue';
 import { mkId } from '../core/id';
 import { T, fonts } from './theme';
 import { BUCKET_COLOR, BUCKET_LABEL, Button, Money, fmtDate } from './components';
@@ -56,6 +56,8 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
   const [step, setStep] = useState<Step>('card');
   const [showSimilar, setShowSimilar] = useState(false);
   const [unticked, setUnticked] = useState<Set<string>>(new Set());
+  /** How much of the payee to match on, when you've widened it ("lidl" rather than "lidl gb bristol"). */
+  const [matchWith, setMatchWith] = useState<string | null>(null);
   const [done, setDone] = useState<Done[]>([]);
   const [toast, setToast] = useState<Done | null>(null);
   const [error, setError] = useState('');
@@ -94,6 +96,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
     setStep('card');
     setShowSimilar(false);
     setUnticked(new Set());
+    setMatchWith(null);
     setAttach(true);
     setPayIt(true);
   }, [card?.id]);
@@ -107,10 +110,19 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
   const mine = pick.id === card?.id ? pick : { id: card?.id ?? '' };
   const streamId = mine.streamId !== undefined ? mine.streamId : paying?.streamId ?? guess?.right.streamId ?? null;
   const category = mine.category !== undefined ? mine.category : guess?.right.category ?? null;
-  // Similar rows in the same state as this card, so a swipe never un-sorts something already decided.
-  const similar = card && smart ? findSimilar(card, waiting).filter((x) => x.bucket === card.bucket) : [];
+  // What new rows from this payee will be recognised by — the payee up to its first number, or
+  // fewer words if you've widened it.
+  const choices = card && smart ? patternChoices(card) : [];
+  const basePattern = card && smart ? rulePattern(card) : null;
+  const pattern = basePattern && matchWith ? { ...basePattern, pattern: matchWith } : basePattern;
+  // Similar rows in the same state as this card, so a swipe never un-sorts something already
+  // decided: the same payee, plus anything the rule would catch anyway.
+  const similar = (() => {
+    if (!card || !smart) return [];
+    const byId = new Map([...findSimilar(card, waiting), ...(pattern ? findMatching(card, waiting, pattern) : [])].map((x) => [x.id, x]));
+    return [...byId.values()].filter((x) => x.bucket === card.bucket);
+  })();
   const alsoSorting = similar.filter((x) => !unticked.has(x.id));
-  const pattern = card && smart ? rulePattern(card) : null;
   // The same rule already standing — no need to make it again. (A different one is replaced.)
   const ruleStands = (d: Pick<Decision, 'bucket' | 'streamId' | 'category'>) =>
     pattern &&
@@ -535,6 +547,24 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                     </button>
                   )}
                   {pattern && <span>{similar.length > 0 ? ' · ' : ''}new “{pattern.pattern}” ones will follow</span>}
+                </div>
+              )}
+              {smart && choices.length > 1 && step === 'card' && (
+                <div onPointerDown={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', fontSize: 11, color: T.textMuted }}>
+                  <span>Sort every one that says</span>
+                  {choices.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setMatchWith(c === choices[choices.length - 1] ? null : c)}
+                      style={{
+                        border: `1px solid ${pattern?.pattern === c ? T.green : T.border}`, background: pattern?.pattern === c ? T.green + '22' : 'none',
+                        color: pattern?.pattern === c ? T.green : T.text, borderRadius: 999, padding: '3px 9px', fontSize: 12, cursor: 'pointer',
+                      }}
+                    >
+                      {c}
+                    </button>
+                  ))}
                 </div>
               )}
               {showSimilar && step === 'card' && (

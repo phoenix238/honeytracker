@@ -49,6 +49,33 @@ export function rulePattern(t: Pick<Transaction, 'counterparty' | 'reference'>):
   return pattern.length >= 3 ? { field, pattern } : null;
 }
 
+// Words too vague to match a payee on by themselves ("THE WORKS" isn't every "the").
+const VAGUE = new Set(['the', 'and', 'www', 'uk', 'gb', 'ltd', 'shop', 'store', 'card', 'payment', 'online', 'pay', 'to', 'from']);
+
+/**
+ * How widely a swipe can match, narrowest last: the payee's words one more at a time —
+ * "lidl", "lidl gb", "lidl gb bristol" — so one choice can catch every branch of a chain.
+ */
+export function patternChoices(t: Pick<Transaction, 'counterparty' | 'reference'>): string[] {
+  const p = rulePattern(t);
+  if (!p) return [];
+  const words = p.pattern.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 1; i <= words.length; i++) {
+    const s = words.slice(0, i).join(' ');
+    if (s.length < 3 || (i === 1 && VAGUE.has(s))) continue;
+    out.push(s);
+  }
+  return out.length ? out : [p.pattern];
+}
+
+/** The rows a rule looking for `pattern` would catch — money moving the same way, payee containing it. */
+export function findMatching<T extends Transaction>(t: Transaction, pool: readonly T[], p: { field: Rule['field']; pattern: string }): T[] {
+  const needle = p.pattern.trim().toLowerCase();
+  if (!needle) return [];
+  return pool.filter((x) => x.id !== t.id && x.direction === t.direction && (p.field === 'counterparty' ? x.counterparty : x.reference).toLowerCase().includes(needle));
+}
+
 export function findSimilar<T extends Transaction>(t: Transaction, pool: readonly T[]): T[] {
   const key = similarKey(t);
   if (!key) return [];
