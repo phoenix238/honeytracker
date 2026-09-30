@@ -352,6 +352,9 @@ function ProfileSection({ app }: { app: App }) {
             <Field label="Next number"><input style={inputStyle} inputMode="numeric" value={next} onChange={(e) => setNext(e.target.value)} /></Field>
             <Field label="Pay within (days)"><input style={inputStyle} inputMode="numeric" value={String(p.paymentTermsDays)} onChange={set('paymentTermsDays')} /></Field>
           </div>
+          <Field label="Late payment note" hint="Printed on every invoice, under how to pay. Not on receipts for paid invoices.">
+            <textarea style={{ ...inputStyle, minHeight: 56 }} value={p.lateNote} onChange={set('lateNote')} />
+          </Field>
           <Field label="Footer line"><input style={inputStyle} value={p.footer} onChange={set('footer')} /></Field>
           <div style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.5 }}>
             Carrying on from old invoices? Set “Next number” one above your last invoice so numbers never repeat.

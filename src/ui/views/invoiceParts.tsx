@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { T, fonts } from '../theme';
 import { Button, Card, Chip, Empty, Field, Money, Sheet, fmtDate, inputStyle } from '../components';
 import { api, type CalendarEvent } from '../api';
-import { formatInvoiceNumber, hoursBetween, invoiceTotal, lineAmount, timedDescription } from '../../core/invoices';
+import { formatInvoiceNumber, hasWorkDates, hoursBetween, invoiceTotal, lineAmount, lineWhen } from '../../core/invoices';
 import { addDays } from '../../core/dates';
 import { formatGBP } from '../../core/money';
 import type { BusinessProfile, InvoiceLine } from '../../core/types';
@@ -61,25 +61,23 @@ export function NextNumber({ app }: { app: App }) {
 }
 
 /** Start and end times for a line: the hours and the wording fill themselves in. */
+/** Start and end times for a line; the hours between them become its quantity. */
 export function TimeFields({
-  date,
   start,
   end,
   onChange,
 }: {
-  date: string;
   start: string;
   end: string;
-  onChange: (v: { date: string; start: string; end: string; hours: number | null }) => void;
+  onChange: (v: { start: string; end: string; hours: number | null }) => void;
 }) {
-  const set = (patch: Partial<{ date: string; start: string; end: string }>) => {
-    const next = { date, start, end, ...patch };
+  const set = (patch: Partial<{ start: string; end: string }>) => {
+    const next = { start, end, ...patch };
     onChange({ ...next, hours: hoursBetween(next.start, next.end) });
   };
   const hours = hoursBetween(start, end);
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr', gap: 8, alignItems: 'end' }}>
-      <Field label="Day"><input style={inputStyle} type="date" value={date} onChange={(e) => set({ date: e.target.value })} /></Field>
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, alignItems: 'end' }}>
       <Field label="Start"><input style={inputStyle} type="time" value={start} onChange={(e) => set({ start: e.target.value })} /></Field>
       <Field label={hours ? `End · ${hours}h` : 'End'}><input style={inputStyle} type="time" value={end} onChange={(e) => set({ end: e.target.value })} /></Field>
     </div>
@@ -105,7 +103,7 @@ export function CalendarPicker({
   app: App;
   open: boolean;
   onClose: () => void;
-  onAdd: (lines: { description: string; quantity: number }[]) => void;
+  onAdd: (lines: { description: string; quantity: number; date: string; start: string | null; end: string | null }[]) => void;
   rateHint: string;
 }) {
   const data = app.data!;
@@ -143,7 +141,7 @@ export function CalendarPicker({
     } catch {
       /* only a convenience */
     }
-    onAdd(chosen.map((e) => ({ description: timedDescription(e.date, e.start, e.end, e.title), quantity: per === 'hour' && e.hours ? e.hours : 1 })));
+    onAdd(chosen.map((e) => ({ description: e.title, quantity: per === 'hour' && e.hours ? e.hours : 1, date: e.date, start: e.start, end: e.end })));
     setPicked(new Set());
     onClose();
   };
@@ -245,6 +243,14 @@ export function InvoicePreview({
   const from = [profile.businessName && profile.name ? profile.name : '', ...profile.address.split('\n'), profile.email, profile.phone].filter(Boolean);
   const to = [...clientAddress.split('\n'), clientEmail].filter(Boolean);
   const qty = (q: number) => (Number.isInteger(q) ? String(q) : q.toFixed(2).replace(/0$/, ''));
+  const dated = hasWorkDates(lines);
+  // What an invoice should carry that this one doesn't yet — shown to you, not on the invoice.
+  const missing = [
+    !profile.name && 'your name',
+    !profile.address.trim() && 'your address',
+    !profile.sortCode && !profile.accountNumber && 'your bank details',
+    lines.some((l) => !l.date) && 'the date worked on every line',
+  ].filter(Boolean) as string[];
   return (
     <Sheet open onClose={onClose} title="Preview">
       <div style={{ background: '#fff', color: ink, borderRadius: 6, padding: '22px 20px', fontFamily: 'Helvetica, Arial, sans-serif', fontSize: 12, lineHeight: 1.45, boxShadow: '0 4px 18px rgba(0,0,0,0.4)' }}>
@@ -268,6 +274,7 @@ export function InvoicePreview({
         <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 18, fontSize: 11 }}>
           <thead>
             <tr style={{ color: muted, textAlign: 'left', borderBottom: `1px solid ${muted}` }}>
+              {dated && <th style={{ padding: '4px 6px 4px 0', fontWeight: 700 }}>Date</th>}
               <th style={{ padding: '4px 0', fontWeight: 700 }}>Description</th>
               <th style={{ padding: '4px 4px', textAlign: 'right' }}>Qty</th>
               <th style={{ padding: '4px 4px', textAlign: 'right' }}>Rate</th>
@@ -277,6 +284,12 @@ export function InvoicePreview({
           <tbody>
             {lines.map((l, i) => (
               <tr key={i} style={{ verticalAlign: 'top' }}>
+                {dated && (
+                  <td style={{ padding: '6px 6px 6px 0', whiteSpace: 'nowrap' }}>
+                    {lineWhen(l).day}
+                    {lineWhen(l).time && <div style={{ color: muted, fontSize: 10 }}>{lineWhen(l).time}</div>}
+                  </td>
+                )}
                 <td style={{ padding: '6px 0' }}>{l.description || '—'}</td>
                 <td style={{ padding: '6px 4px', textAlign: 'right' }}>{qty(l.quantity)}</td>
                 <td style={{ padding: '6px 4px', textAlign: 'right', whiteSpace: 'nowrap' }}>{formatGBP(l.unitPence)}</td>
@@ -303,12 +316,15 @@ export function InvoicePreview({
             <div style={{ color: muted, fontSize: 10, marginTop: 6 }}>Please use {number} as the payment reference so it’s matched to this invoice.</div>
           </div>
         )}
-        {[notes, profile.footer].filter(Boolean).map((b, i) => (
+        {[notes, profile.lateNote, profile.footer].filter(Boolean).map((b, i) => (
           <div key={i} style={{ color: muted, fontSize: 10, marginTop: 10, whiteSpace: 'pre-wrap' }}>{b}</div>
         ))}
       </div>
-      {!profile.sortCode && !profile.accountNumber && (
-        <div style={{ fontSize: 12, color: T.accentBright }}>No bank details yet — add them in Settings → Your details so the invoice says how to pay.</div>
+      {missing.length > 0 && (
+        <div style={{ fontSize: 12, color: T.accentBright, lineHeight: 1.5 }}>
+          Before you send: add {missing.join(', ').replace(/, ([^,]*)$/, ' and $1')}.
+          {missing.some((m) => m !== 'the date worked on every line') && ' Your details are in Settings → Your details.'}
+        </div>
       )}
       {onPdf && <Button onClick={onPdf}>Open the PDF</Button>}
       <div style={{ fontSize: 11, color: T.textMuted }}>Total <Money pence={invoiceTotal({ lines })} size={11} /></div>

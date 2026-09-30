@@ -1,6 +1,6 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { BusinessProfile, Invoice } from '../src/core/types.js';
-import { invoiceTotal, lineAmount } from '../src/core/invoices.js';
+import { hasWorkDates, invoiceTotal, lineAmount, lineWhen } from '../src/core/invoices.js';
 import { formatGBP } from '../src/core/money.js';
 
 // The invoice as a one-page (or more) A4 PDF — a real file to attach to an email or share
@@ -102,9 +102,12 @@ export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, pa
   }
   y = Math.min(y, leftBottom) - 24;
 
-  // Lines.
-  const cols = { qty: W - M - 190, rate: W - M - 95, amt: W - M };
-  text('Description', M, 9, bold, MUTED);
+  // Lines. When the work has dates, they get their own column on the left: the day, and the
+  // hours worked under it.
+  const dated = hasWorkDates(inv.lines);
+  const cols = { desc: dated ? M + 100 : M, qty: W - M - 190, rate: W - M - 95, amt: W - M };
+  if (dated) text('Date', M, 9, bold, MUTED);
+  text('Description', cols.desc, 9, bold, MUTED);
   right('Qty', cols.qty, 9, bold, MUTED);
   right('Rate', cols.rate, 9, bold, MUTED);
   right('Amount', cols.amt, 9, bold, MUTED);
@@ -112,17 +115,26 @@ export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, pa
   page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.6, color: MUTED });
   y -= 16;
   for (const l of inv.lines) {
-    const desc = wrap(l.description || '—', font, 10, cols.qty - M - 50);
-    newPageIfNeeded(desc.length * 13 + 10);
+    const desc = wrap(l.description || '—', font, 10, cols.qty - cols.desc - 50);
+    const when = lineWhen(l);
+    const rows = Math.max(desc.length, dated ? [when.day, when.time].filter(Boolean).length : 0);
+    newPageIfNeeded(rows * 13 + 10);
+    const top = y;
     const qty = Number.isInteger(l.quantity) ? String(l.quantity) : l.quantity.toFixed(2).replace(/0$/, '');
     right(qty, cols.qty);
     right(formatGBP(l.unitPence), cols.rate);
     right(formatGBP(lineAmount(l)), cols.amt);
+    if (dated) {
+      if (when.day) text(when.day, M);
+      y -= 13;
+      if (when.time) text(when.time, M, 9, font, MUTED);
+      y = top;
+    }
     for (const d of desc) {
-      text(d, M);
+      text(d, cols.desc);
       y -= 13;
     }
-    y -= 5;
+    y = Math.min(y, top - rows * 13) - 5;
   }
   y -= 2;
   page.drawLine({ start: { x: cols.qty - 40, y }, end: { x: W - M, y }, thickness: 0.6, color: MUTED });
@@ -154,7 +166,8 @@ export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, pa
     text(`Please use ${inv.number} as the payment reference so it's matched to this invoice.`, M, 9, font, MUTED);
     y -= 20;
   }
-  for (const block of [inv.notes, profile.footer].filter(Boolean)) {
+  // The late-payment note belongs on a bill, not on a receipt for one already paid.
+  for (const block of [inv.notes, receipt ? '' : profile.lateNote, profile.footer].filter(Boolean)) {
     for (const l of wrap(block, font, 9, W - 2 * M)) {
       newPageIfNeeded(14);
       text(l, M, 9, font, MUTED);

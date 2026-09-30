@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { handle } from '../router';
 import { setDb, pglite, migrate, type Db } from '../db';
-import type { Transaction } from '../../src/core/types';
+import type { InvoiceLine, Transaction } from '../../src/core/types';
 
 // End-to-end through the real router and real SQL (PGlite = Postgres in WASM), with the bank
 // and CSTL faked at the network boundary.
@@ -379,6 +379,29 @@ describe('invoices', () => {
     const next = (await call('POST', '/api/invoices', { clientName: 'Café', lines })).data;
     await call('PATCH', `/api/invoices/${next.id}`, { status: 'sent' });
     expect((await call('GET', `/api/invoices/${next.id}/candidates`)).data.map((t: Transaction) => t.sourceId)).toEqual(['other-1']);
+  });
+
+  it('keeps the day worked and start–end times on each line, and prints them', async () => {
+    await signIn();
+    const inv = (await call('POST', '/api/invoices', {
+      clientName: 'Ethical Caff',
+      lines: [
+        { description: 'Shift', quantity: 3, unitPence: 1350, date: '2026-09-03', start: '9:30', end: '12:30' },
+        { description: 'Shift', quantity: 2, unitPence: 1350, date: '2026-09-04', start: '10:00', end: 'late' }, // half a pair: no times
+        { description: 'Admin', quantity: 1, unitPence: 1000, date: 'soon' },
+      ],
+    })).data;
+    expect(inv.lines.map((l: InvoiceLine) => [l.date, l.start, l.end])).toEqual([
+      ['2026-09-03', '09:30', '12:30'],
+      ['2026-09-04', null, null],
+      [null, null, null],
+    ]);
+    const pdf = await handle(new Request(`${BASE}/api/invoices/${inv.id}/pdf`, { headers: { cookie } }));
+    expect(pdf.status).toBe(200);
+    const s = (await call('GET', '/api/state')).data.settings;
+    expect(s.profile.lateNote).toMatch(/Late payments/);
+    await call('PUT', '/api/settings', { profile: { ...s.profile, lateNote: 'Overdue invoices are charged 8% a year.' } });
+    expect((await call('GET', '/api/state')).data.settings.profile.lateNote).toBe('Overdue invoices are charged 8% a year.');
   });
 
   it('only deletes drafts', async () => {

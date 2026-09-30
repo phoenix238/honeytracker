@@ -150,6 +150,11 @@ export interface InvoiceLine {
   quantity: number;
   /** Price per unit, in pence. */
   unitPence: Pence;
+  /** The day the work was done (the "supply date" an invoice should show). */
+  date?: IsoDate | null;
+  /** Start and end times, "10:00" / "13:00", when the work was by the hour. */
+  start?: string | null;
+  end?: string | null;
 }
 
 /**
@@ -187,6 +192,8 @@ export interface BusinessProfile {
   accountNumber: string;
   invoicePrefix: string;
   paymentTermsDays: number;
+  /** Printed on every invoice (not on paid receipts), under how to pay. */
+  lateNote: string;
   footer: string;
 }
 
@@ -200,6 +207,7 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   accountNumber: '',
   invoicePrefix: 'INV',
   paymentTermsDays: 14,
+  lateNote: 'Please pay by the due date. Late payments may be subject to interest and a late-payment charge.',
   footer: 'Thank you!',
 };
 

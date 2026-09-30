@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, timedDescription, possiblePayments, invoiceGuess } from '../invoices';
+import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, lineWhen, hasWorkDates, possiblePayments, invoiceGuess } from '../invoices';
 import type { Invoice } from '../types';
 import { txn } from './fixtures';
 
@@ -85,8 +85,11 @@ describe('time on invoices', () => {
     expect(hoursBetween('25:00', '10:00')).toBeNull();
   });
   it('writes the line the way a client reads it', () => {
-    expect(timedDescription('2026-09-03', '10:00', '13:00', 'Shift')).toBe('Thu 3 Sept, 10:00–13:00 · Shift'.replace('Sept', new Date('2026-09-03T12:00:00Z').toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })));
-    expect(timedDescription('2026-09-03', null, null, 'Workshop day')).toMatch(/^Thu 3 Sep\w* · Workshop day$/);
+    expect(lineWhen({ date: '2026-09-03', start: '10:00', end: '13:00' })).toEqual({ day: 'Thu 3 Sep 2026', time: '10:00–13:00' });
+    expect(lineWhen({ date: '2026-09-03' })).toEqual({ day: 'Thu 3 Sep 2026', time: '' });
+    expect(lineWhen({})).toEqual({ day: '', time: '' });
+    expect(hasWorkDates([{ description: 'x', quantity: 1, unitPence: 1 }])).toBe(false);
+    expect(hasWorkDates([{ description: 'x', quantity: 1, unitPence: 1 }, { description: 'y', quantity: 1, unitPence: 1, date: '2026-09-03' }])).toBe(true);
   });
 });
 

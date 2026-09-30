@@ -40,14 +40,23 @@ export function hoursBetween(start: string, end: string): number | null {
   return Math.round((((b - a + 1440) % 1440) / 60) * 100) / 100;
 }
 
-/** "Tue 3 Sep" */
-export function dayLabel(date: IsoDate): string {
-  return new Date(`${date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "Thu 3 Sep 2026" — the day worked, spelled the same on the phone and in the PDF. */
+export function workedDay(date: IsoDate): string {
+  const d = new Date(`${date}T12:00:00Z`);
+  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
-/** An invoice line's wording for time worked: "Tue 3 Sep, 10:00–13:00 · Shift". */
-export function timedDescription(date: IsoDate, start: string | null, end: string | null, what = ''): string {
-  return [`${dayLabel(date)}${start && end ? `, ${start}–${end}` : ''}`, what.trim()].filter(Boolean).join(' · ');
+/** When a line's work was done, for the invoice: the day, and "10:00–13:00" when timed. Empty when neither is set. */
+export function lineWhen(l: Pick<InvoiceLine, 'date' | 'start' | 'end'>): { day: string; time: string } {
+  return { day: l.date ? workedDay(l.date) : '', time: l.start && l.end ? `${l.start}–${l.end}` : '' };
+}
+
+/** Whether any line says when its work was done — if so, the invoice gets a "Date" column. */
+export function hasWorkDates(lines: readonly InvoiceLine[]): boolean {
+  return lines.some((l) => l.date || (l.start && l.end));
 }
 
 /** "INV" + 57 → "INV57": no padding zeros, so the number is exactly the one you count to. */

@@ -141,7 +141,18 @@ function invoiceDraft(b: Record<string, unknown>, current?: Invoice, terms = 14)
     for (const raw of b.lines as Record<string, unknown>[]) {
       const quantity = Number(raw?.quantity);
       if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 100_000) throw new HttpError(400, 'Each line needs a quantity above zero');
-      lines.push({ description: str(raw?.description, 500), quantity: Math.round(quantity * 100) / 100, unitPence: pence(raw?.unitPence) });
+      const time = (v: unknown) => (typeof v === 'string' && /^([01]?\d|2[0-3]):[0-5]\d$/.test(v) ? v.padStart(5, '0') : null);
+      const start = time(raw?.start);
+      const end = time(raw?.end);
+      lines.push({
+        description: str(raw?.description, 500),
+        quantity: Math.round(quantity * 100) / 100,
+        unitPence: pence(raw?.unitPence),
+        date: isDate(raw?.date) ? raw.date : null,
+        // Times only mean something as a pair.
+        start: start && end ? start : null,
+        end: start && end ? end : null,
+      });
     }
   }
   const issueDate = b.issueDate !== undefined ? (isDate(b.issueDate) ? b.issueDate : null) : current?.issueDate ?? today();
@@ -175,6 +186,7 @@ function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessP
     accountNumber: pick('accountNumber', 20),
     invoicePrefix: (pick('invoicePrefix', 12) || DEFAULT_PROFILE.invoicePrefix).replace(/[^\w-]/g, ''),
     paymentTermsDays: Number.isFinite(terms) && terms >= 0 && terms <= 365 ? terms : current.paymentTermsDays,
+    lateNote: pick('lateNote', 500),
     footer: pick('footer', 500),
   };
 }
