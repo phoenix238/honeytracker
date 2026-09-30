@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { T, fonts } from '../theme';
-import { Button, Card, Label, Money, Section, Stat, Title, fmtDate, Sheet, Field, inputStyle, Chip } from '../components';
+import { Button, Card, Label, Money, Section, Stat, Title, Sheet, Field, inputStyle, Chip } from '../components';
 import { CameraIcon, RefreshIcon } from '../icons';
 import { taxYearLabel } from '../../core/dates';
 import { parsePence, formatGBP } from '../../core/money';
@@ -10,8 +10,8 @@ import { StreamSheet } from './StreamSheet';
 import { DoublesSheet, checkCounts, checkSummary as summary } from './DoublesSheet';
 import type { View } from '../Shell';
 
-// The one-glance answer: how much should be in the tax pot right now, what HMRC wants next
-// and when, and what's left to tidy.
+// The one-glance answer: how much should be in the tax pot right now, and what's left to tidy.
+// When HMRC wants paying lives on the Tax tab.
 
 export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) => void; sort: () => void; toSort: number }) {
   const data = app.data!;
@@ -24,8 +24,6 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
   const check = checkCounts(app);
   const openSummary = streamOpen ? p.streams.find((s) => (s.streamId ?? 'none') === streamOpen) ?? null : null;
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
-  const next = p.upcoming[0];
-  const nextDateTotal = next ? p.upcoming.filter((x) => x.due === next.due).reduce((a, x) => a + x.amountPence, 0) : 0;
   const owed = owedSummary(data.invoices, data.today);
   const storageUsed = data.storage.limitBytes ? data.storage.usedBytes / data.storage.limitBytes : 0;
 
@@ -57,20 +55,6 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
       <Button tone={toSort ? 'primary' : 'quiet'} onClick={toSort ? sort : () => go('inbox')} style={{ borderRadius: 999, padding: '13px 18px', fontSize: 15 }}>
         {toSort ? `${toSort} to sort — swipe through them` : '✓ Everything’s sorted'}
       </Button>
-
-      {next && (
-        <Card onClick={() => go('tax')}>
-          <Label>Next HMRC payment</Label>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginTop: 6 }}>
-            <Money pence={nextDateTotal} size={22} color={T.text} />
-            <span style={{ fontSize: 13, color: T.textMuted }}>{fmtDate(next.due)}</span>
-          </div>
-          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>
-            {p.upcoming.filter((x) => x.due === next.due).map((x) => x.label).join(' + ')}
-            {p.upcoming.some((x) => x.due === next.due && x.estimated) ? ' · estimate' : ''}
-          </div>
-        </Card>
-      )}
 
       {storageUsed >= 0.75 && (
         <Card onClick={() => go('settings')} style={{ borderColor: T.danger }}>
