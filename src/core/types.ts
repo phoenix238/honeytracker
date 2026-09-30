@@ -72,6 +72,11 @@ export interface Stream {
   archived: boolean;
   /** What this work is, in your words — the AI reads it to tell the streams apart. */
   about: string;
+  /**
+   * Its invoices carry the late-payment note. Business work (a café, media, odd jobs) does;
+   * private clients — therapy sessions — don't, since statutory late fees don't apply to them.
+   */
+  lateFees: boolean;
 }
 
 /** HMRC's expense categories, keyed by the field names Making Tax Digital uses. */

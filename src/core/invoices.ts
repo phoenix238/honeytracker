@@ -1,4 +1,4 @@
-import type { Invoice, InvoiceLine, IsoDate, Pence, Transaction } from './types.js';
+import type { BusinessProfile, Invoice, InvoiceLine, IsoDate, Pence, Stream, Transaction } from './types.js';
 import { addDays } from './dates.js';
 import { formatGBP } from './money.js';
 
@@ -57,6 +57,19 @@ export function lineWhen(l: Pick<InvoiceLine, 'date' | 'start' | 'end'>): { day:
 /** Whether any line says when its work was done — if so, the invoice gets a "Date" column. */
 export function hasWorkDates(lines: readonly InvoiceLine[]): boolean {
   return lines.some((l) => l.date || (l.start && l.end));
+}
+
+/**
+ * Until you choose, a stream gets late fees unless its name says it's private-client work
+ * (therapy, massage, bodywork) — the people statutory late fees don't cover.
+ */
+export function lateFeesByDefault(streamName: string): boolean {
+  return !/cranio|sacral|\bcstl?\b|therap|massage|bodywork|treatment|osteo|reiki|reflex/i.test(streamName);
+}
+
+/** The late-payment note for an invoice: yours, if its stream has late fees on; otherwise none. */
+export function lateNoteFor(streamId: string | null, streams: readonly Pick<Stream, 'id' | 'lateFees'>[], profile: Pick<BusinessProfile, 'lateNote'>): string {
+  return streams.find((s) => s.id === streamId)?.lateFees ? profile.lateNote : '';
 }
 
 /** "INV" + 57 → "INV57": no padding zeros, so the number is exactly the one you count to. */

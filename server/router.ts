@@ -9,7 +9,7 @@ import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
-import { invoiceTotal, possiblePayments } from '../src/core/invoices.js';
+import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { buildWorkbook } from './workbook.js';
 import { eventsBetween, fetchCalendar } from './calendar.js';
@@ -405,8 +405,9 @@ const routes: [string, RegExp, Handler][] = [
     const b = await body(req);
     const name = str(b.name, 80).trim();
     if (!name) throw new HttpError(400, 'Give the stream a name');
-    const stream: Omit<Stream, 'id'> & { id?: string } = {
+    const stream: Omit<Stream, 'id' | 'lateFees'> & { id?: string; lateFees: boolean | null } = {
       about: str(b.about, 600).trim(),
+      lateFees: typeof b.lateFees === 'boolean' ? b.lateFees : null,
       id: b.id ? str(b.id, 64) : undefined,
       name,
       kind: b.kind === 'other' ? 'other' : 'self_employment',
@@ -664,7 +665,7 @@ const routes: [string, RegExp, Handler][] = [
     if (!inv) throw new HttpError(404, 'Not found');
     const paid = inv.paidTransactionId ? await r.getTransaction(inv.paidTransactionId) : null;
     const settings = await r.getSettings();
-    const bytes = await buildInvoicePdf(inv, settings.profile, paid?.date ?? null);
+    const bytes = await buildInvoicePdf(inv, settings.profile, paid?.date ?? null, lateNoteFor(inv.streamId, await r.listStreams(), settings.profile));
     const kind = paid ? 'receipt' : 'invoice';
     return new Response(new Uint8Array(bytes), {
       headers: {

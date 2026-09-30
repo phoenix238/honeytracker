@@ -48,7 +48,8 @@ function wrap(text: string, font: PDFFont, size: number, width: number): string[
   return out;
 }
 
-export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, paidOn: string | null): Promise<Uint8Array> {
+/** `lateNote` is printed only for streams with late fees on — the caller decides. */
+export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, paidOn: string | null, lateNote = ''): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -167,7 +168,7 @@ export async function buildInvoicePdf(inv: Invoice, profile: BusinessProfile, pa
     y -= 20;
   }
   // The late-payment note belongs on a bill, not on a receipt for one already paid.
-  for (const block of [inv.notes, receipt ? '' : profile.lateNote, profile.footer].filter(Boolean)) {
+  for (const block of [inv.notes, receipt ? '' : lateNote, profile.footer].filter(Boolean)) {
     for (const l of wrap(block, font, 9, W - 2 * M)) {
       newPageIfNeeded(14);
       text(l, M, 9, font, MUTED);

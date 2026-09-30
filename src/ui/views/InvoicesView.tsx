@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { T, fonts } from '../theme';
 import { Button, Card, Chip, Empty, Field, Label, Money, Section, Sheet, Title, fmtDate, inputStyle } from '../components';
 import { api, invoicePdfUrl } from '../api';
-import { daysOverdue, formatInvoiceNumber, invoiceState, invoiceTotal, lineAmount, mentionsInvoice, owedSummary, paidDifference, pastClients, type InvoiceState } from '../../core/invoices';
+import { daysOverdue, formatInvoiceNumber, invoiceState, invoiceTotal, lateNoteFor, lineAmount, mentionsInvoice, owedSummary, paidDifference, pastClients, type InvoiceState } from '../../core/invoices';
 import { CalendarPicker, InvoicePreview, NextNumber, TimeFields } from './invoiceParts';
 import { addDays } from '../../core/dates';
 import { formatAmount, formatGBP, parsePence } from '../../core/money';
@@ -227,6 +227,7 @@ function InvoiceSheet({ app, invoice, onClose }: { app: App; invoice: Invoice | 
     numberPending: !current,
     issueDate, dueDate, clientName, clientEmail, clientAddress, notes,
     lines: lines.map(fromDraft).filter((l) => l.description || l.unitPence),
+    lateNote: lateNoteFor(streamId, data.streams, data.settings.profile),
     profile: data.settings.profile,
   };
 

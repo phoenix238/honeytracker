@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, lineWhen, hasWorkDates, possiblePayments, invoiceGuess } from '../invoices';
+import { invoiceTotal, invoiceState, mentionsInvoice, invoiceForPayment, paymentCandidates, owedSummary, formatInvoiceNumber, daysOverdue, hoursBetween, lineWhen, hasWorkDates, lateFeesByDefault, lateNoteFor, possiblePayments, invoiceGuess } from '../invoices';
 import type { Invoice } from '../types';
 import { txn } from './fixtures';
 
@@ -122,5 +122,19 @@ describe('payments that don’t match exactly', () => {
     expect(invoiceGuess(txn({ direction: 'in', amountPence: 5000, counterparty: 'ETHICAL CAFF' }), [caff, caff2])?.id).toBe('c2'); // two open: the amount decides
     expect(invoiceGuess(txn({ direction: 'in', amountPence: 1, counterparty: 'ETHICAL CAFF' }), [caff, caff2])).toBeNull();
     expect(invoiceGuess(txn({ direction: 'out', amountPence: 6000, counterparty: 'Sam Client' }), [sam])).toBeNull();
+  });
+});
+
+describe('late fees', () => {
+  it('are on for business work and off for private-client work until you choose', () => {
+    for (const name of ['Coffee', 'Ethical Caff', 'Media', 'Filming & photos', 'Odd jobs']) expect(lateFeesByDefault(name)).toBe(true);
+    for (const name of ['Craniosacral therapy', 'CST sessions', 'CSTL practice', 'Massage', 'Bodywork']) expect(lateFeesByDefault(name)).toBe(false);
+  });
+  it('print only on invoices for a stream that has them on', () => {
+    const streams = [{ id: 'coffee', lateFees: true }, { id: 'cst', lateFees: false }];
+    const profile = { lateNote: 'Pay up.' };
+    expect(lateNoteFor('coffee', streams, profile)).toBe('Pay up.');
+    expect(lateNoteFor('cst', streams, profile)).toBe('');
+    expect(lateNoteFor(null, streams, profile)).toBe('');
   });
 });

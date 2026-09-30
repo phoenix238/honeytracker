@@ -4,7 +4,7 @@ import { ruleMatches } from '../rules.js';
 import { DEFAULT_SETTINGS, type Stream } from '../types.js';
 import { txn } from './fixtures.js';
 
-const stream = (id: string, over: Partial<Stream> = {}): Stream => ({ id, name: id, kind: 'self_employment', color: '#fff', archived: false, about: '', ...over });
+const stream = (id: string, over: Partial<Stream> = {}): Stream => ({ id, name: id, kind: 'self_employment', color: '#fff', archived: false, about: '', lateFees: false, ...over });
 const ctx = (over: Partial<PredictContext> = {}): PredictContext => ({
   streams: [stream('practice'), stream('coffee')],
   settings: { ...DEFAULT_SETTINGS, profile: { ...DEFAULT_SETTINGS.profile, name: 'Phoenix Tanner' } },

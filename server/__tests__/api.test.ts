@@ -407,6 +407,19 @@ describe('invoices', () => {
     expect((await call('GET', '/api/state')).data.settings.profile.lateNote).toBe('Overdue invoices are charged 8% a year.');
   });
 
+  it('late fees are per stream: on for business work, off for therapy, and yours to change', async () => {
+    await signIn();
+    const cst = (await call('POST', '/api/streams', { name: 'Craniosacral therapy' })).data;
+    const coffee = (await call('POST', '/api/streams', { name: 'Coffee' })).data;
+    expect([cst.lateFees, coffee.lateFees]).toEqual([false, true]);
+    expect((await call('POST', '/api/streams', { ...coffee, lateFees: false })).data.lateFees).toBe(false);
+    // Saving it again without saying (archiving, renaming) keeps your choice.
+    const { lateFees: _, ...rest } = coffee;
+    expect((await call('POST', '/api/streams', { ...rest, name: 'Coffee shifts' })).data.lateFees).toBe(false);
+    const inv = (await call('POST', '/api/invoices', { clientName: 'X', streamId: cst.id, lines })).data;
+    expect((await handle(new Request(`${BASE}/api/invoices/${inv.id}/pdf`, { headers: { cookie } }))).status).toBe(200);
+  });
+
   it('only deletes drafts', async () => {
     await signIn();
     const inv = (await call('POST', '/api/invoices', { clientName: 'X', lines })).data;

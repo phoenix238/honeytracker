@@ -219,6 +219,7 @@ export function InvoicePreview({
   clientAddress,
   lines,
   notes,
+  lateNote,
   profile,
   onPdf,
 }: {
@@ -233,6 +234,8 @@ export function InvoicePreview({
   clientAddress: string;
   lines: InvoiceLine[];
   notes: string;
+  /** The late-payment note, or '' when this invoice's stream has late fees off. */
+  lateNote: string;
   profile: BusinessProfile;
   onPdf?: () => void;
 }) {
@@ -316,7 +319,7 @@ export function InvoicePreview({
             <div style={{ color: muted, fontSize: 10, marginTop: 6 }}>Please use {number} as the payment reference so it’s matched to this invoice.</div>
           </div>
         )}
-        {[notes, profile.lateNote, profile.footer].filter(Boolean).map((b, i) => (
+        {[notes, lateNote, profile.footer].filter(Boolean).map((b, i) => (
           <div key={i} style={{ color: muted, fontSize: 10, marginTop: 10, whiteSpace: 'pre-wrap' }}>{b}</div>
         ))}
       </div>

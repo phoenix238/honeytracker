@@ -6,8 +6,8 @@ import type { Stream } from '../types.js';
 import { txn } from './fixtures.js';
 
 const streams: Stream[] = [
-  { id: 's1', name: 'Craniosacral therapy', kind: 'self_employment', color: '#fff', archived: false, about: '' },
-  { id: 's2', name: 'Coffee', kind: 'self_employment', color: '#fff', archived: false, about: '' },
+  { id: 's1', name: 'Craniosacral therapy', kind: 'self_employment', color: '#fff', archived: false, about: '', lateFees: false },
+  { id: 's2', name: 'Coffee', kind: 'self_employment', color: '#fff', archived: false, about: '', lateFees: false },
 ];
 
 describe('reading CSV back from a spreadsheet', () => {

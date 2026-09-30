@@ -83,6 +83,7 @@ function StreamsSection({ app }: { app: App }) {
           <span style={{ fontSize: 11, color: T.textMuted }}>
             {s.kind === 'other' ? 'Not taxed here' : 'Self-employment'}
             {data.settings.cstlStreamId === s.id ? ' · CSTL' : ''}
+            {s.lateFees && !s.archived ? ' · late fees' : ''}
             {s.archived ? ' · archived' : ''}
           </span>
         </Card>
@@ -123,6 +124,13 @@ function StreamsSection({ app }: { app: App }) {
                 style={{ width: 28, height: 28, borderRadius: 14, background: c, border: editing.color === c ? `3px solid ${T.text}` : 'none', cursor: 'pointer' }} />
             ))}
           </div>
+          <label style={{ fontSize: 13, display: 'flex', gap: 8, lineHeight: 1.5 }}>
+            <input type="checkbox" checked={editing.lateFees} onChange={(e) => setEditing({ ...editing, lateFees: e.target.checked })} />
+            <span>
+              Late fees on its invoices
+              <span style={{ display: 'block', fontSize: 11, color: T.textMuted }}>For business clients. Leave off for private clients (therapy sessions) — statutory late fees don’t apply to them.</span>
+            </span>
+          </label>
           <label style={{ fontSize: 13, display: 'flex', gap: 8 }}>
             <input type="checkbox" checked={data.settings.cstlStreamId === editing.id} onChange={(e) => app.saveSettings({ cstlStreamId: e.target.checked ? editing.id : null })} />
             CSTL session income goes here
@@ -352,7 +360,7 @@ function ProfileSection({ app }: { app: App }) {
             <Field label="Next number"><input style={inputStyle} inputMode="numeric" value={next} onChange={(e) => setNext(e.target.value)} /></Field>
             <Field label="Pay within (days)"><input style={inputStyle} inputMode="numeric" value={String(p.paymentTermsDays)} onChange={set('paymentTermsDays')} /></Field>
           </div>
-          <Field label="Late payment note" hint="Printed on every invoice, under how to pay. Not on receipts for paid invoices.">
+          <Field label="Late payment note" hint="Printed under how to pay on invoices for streams with late fees on (set in Income streams). Not on receipts for paid invoices.">
             <textarea style={{ ...inputStyle, minHeight: 56 }} value={p.lateNote} onChange={set('lateNote')} />
           </Field>
           <Field label="Footer line"><input style={inputStyle} value={p.footer} onChange={set('footer')} /></Field>

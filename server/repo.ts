@@ -15,6 +15,7 @@ import type {
 } from '../src/core/types.js';
 import { DEFAULT_PROFILE, DEFAULT_SETTINGS, OLD_LATE_NOTES } from '../src/core/types.js';
 import { formatInvoiceNumber } from '../src/core/invoices.js';
+import { lateFeesByDefault } from '../src/core/invoices.js';
 import { mkId } from '../src/core/id.js';
 
 // Typed data access. Everything that touches SQL lives here, so the rest of the server
@@ -65,7 +66,9 @@ function toReceipt(r: Row): Receipt {
 }
 
 function toStream(r: Row): Stream {
-  return { id: s(r.id), name: s(r.name), kind: s(r.kind) as Stream['kind'], color: s(r.color), archived: Boolean(r.archived), about: s(r.about) };
+  const name = s(r.name);
+  const lateFees = r.late_fees == null ? lateFeesByDefault(name) : r.late_fees === true || r.late_fees === 't';
+  return { id: s(r.id), name, kind: s(r.kind) as Stream['kind'], color: s(r.color), archived: Boolean(r.archived), about: s(r.about), lateFees };
 }
 
 function toRule(r: Row): Rule {
@@ -239,15 +242,17 @@ export function repo(db: Db) {
     async listStreams(): Promise<Stream[]> {
       return (await db.query<Row>('SELECT * FROM streams ORDER BY created_at')).map(toStream);
     },
-    async saveStream(st: Omit<Stream, 'id' | 'about'> & { id?: string; about?: string }): Promise<Stream> {
+    async saveStream(st: Omit<Stream, 'id' | 'about' | 'lateFees'> & { id?: string; about?: string; lateFees?: boolean | null }): Promise<Stream> {
       const id = st.id ?? mkId();
       const about = st.about ?? '';
-      await db.query(
-        `INSERT INTO streams (id, name, kind, color, archived, created_at, about) VALUES ($1,$2,$3,$4,$5,$6,$7)
-         ON CONFLICT (id) DO UPDATE SET name=$2, kind=$3, color=$4, archived=$5, about=$7`,
-        [id, st.name, st.kind, st.color, st.archived, now(), about],
+      // Late fees left out keeps whatever was chosen before.
+      const [row] = await db.query<Row>(
+        `INSERT INTO streams (id, name, kind, color, archived, created_at, about, late_fees) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT (id) DO UPDATE SET name=$2, kind=$3, color=$4, archived=$5, about=$7, late_fees=COALESCE($8, streams.late_fees)
+         RETURNING *`,
+        [id, st.name, st.kind, st.color, st.archived, now(), about, st.lateFees ?? null],
       );
-      return { id, name: st.name, kind: st.kind, color: st.color, archived: st.archived, about };
+      return toStream(row!);
     },
 
     // ── Rules ─────────────────────────────────────────────────────────────────────────

@@ -12,6 +12,8 @@ export const SCHEMA: string[] = [
     created_at text NOT NULL
   )`,
   `ALTER TABLE streams ADD COLUMN IF NOT EXISTS about text NOT NULL DEFAULT ''`,
+  // Whether its invoices carry the late-payment note; empty until you choose (then it's by name).
+  `ALTER TABLE streams ADD COLUMN IF NOT EXISTS late_fees boolean`,
   `CREATE TABLE IF NOT EXISTS transactions (
     id text PRIMARY KEY,
     date text NOT NULL,
