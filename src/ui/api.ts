@@ -126,6 +126,7 @@ export const api = {
   receiptsAside: (ids: string[], notNeeded: boolean) => call<{ changed: number }>('POST', '/api/receipts/aside', { ids, notNeeded }),
   mergeDoubles: (pairs: { bankId: string; copyId: string }[]) => call<{ merged: number; errors: string[] }>('POST', '/api/doubles/merge', { pairs }),
   keepBoth: (bankId: string, copyId: string) => call<{ ok: boolean }>('POST', '/api/doubles/keep-both', { bankId, copyId }),
+  oldRecords: (action: 'remove' | 'keep-cash', ids: string[]) => call<{ changed: number }>('POST', `/api/old-records/${action}`, { ids }),
   applyTransfers: () => call<{ changed: number; batchId: string | null }>('POST', '/api/transfers/apply', {}),
   receiptToExpense: (id: string, body: { streamId: string | null; category?: string; date?: string; amountPence?: number; paidWith?: string }) =>
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),

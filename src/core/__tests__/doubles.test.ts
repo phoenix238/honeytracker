@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { certainDoubles, copyKind, findDoubles, ownMoneyAsIncome } from '../doubles.js';
+import { certainDoubles, copyKind, findDoubles, ownMoneyAsIncome, unbackedOldRecords } from '../doubles.js';
 import { txn } from './fixtures.js';
 
 const bank = (over = {}) => txn({ source: 'starling', direction: 'in', amountPence: 6000, date: '2026-05-10', counterparty: 'LARA BLIGH', ...over });
@@ -19,7 +19,8 @@ describe('the same money counted twice', () => {
   });
 
   it('leaves alone what isn’t double counting', () => {
-    expect(findDoubles([bank(), oldApp({ date: '2026-04-20' })])).toEqual([]); // too far apart
+    expect(findDoubles([bank(), oldApp({ date: '2026-03-20' })])).toEqual([]); // over six weeks apart
+    expect(findDoubles([bank(), oldApp({ date: '2026-04-20', counterparty: 'Session' })])).toEqual([]); // weeks apart and no name in common
     expect(findDoubles([bank(), oldApp({ amountPence: 6500 })])).toEqual([]); // different amount
     expect(findDoubles([bank({ direction: 'out' }), oldApp()])).toEqual([]); // one in, one out
     expect(findDoubles([bank({ bucket: 'transfer' }), oldApp()])).toEqual([]); // your own money moving
@@ -27,6 +28,41 @@ describe('the same money counted twice', () => {
     expect(findDoubles([bank(), oldApp({ bucket: 'personal' })])).toEqual([]); // the copy doesn't count
     expect(findDoubles([bank(), txn({ source: 'starling', amountPence: 6000, date: '2026-05-10', bucket: 'business_income' })])).toEqual([]); // two bank lines
     expect(findDoubles([bank({ meta: { importedFrom: 'hp:other' } }), oldApp()])).toEqual([]); // already another record's twin
+  });
+
+  it('reaches weeks back for an old-app record when the name agrees (it carries the day you marked it paid)', () => {
+    const [d] = findDoubles([bank(), oldApp({ date: '2026-04-20' })]);
+    expect(d).toMatchObject({ kind: 'copy', days: 20, sameName: true });
+    // A cash line you added only reaches ten days, name or not.
+    expect(findDoubles([bank(), txn({ source: 'cash', amountPence: 6000, date: '2026-04-20', counterparty: 'Lara', bucket: 'business_income' })])).toEqual([]);
+  });
+
+  it('prefers the bank line with the same name over a closer one without', () => {
+    const lara = bank({ date: '2026-05-20' });
+    const other = bank({ date: '2026-05-07', counterparty: 'SOMEONE ELSE' });
+    const [d] = findDoubles([lara, other, oldApp()]);
+    expect(d!.bank.id).toBe(lara.id);
+  });
+
+  it('finds one payment brought in twice — the live Starling feed and a statement file — and keeps Starling’s', () => {
+    const live = bank({ source: 'starling', bucket: 'business_income' });
+    const file = bank({ source: 'bankcsv', sourceId: 'csv-1', date: '2026-05-11', counterparty: 'Lara Bligh', meta: { account: 'Starling CSV' } });
+    const [d] = findDoubles([file, live]);
+    expect(d).toMatchObject({ kind: 'statement' });
+    expect(d!.bank.id).toBe(live.id);
+    expect(copyKind(file)).toBe('Statement file (Starling CSV)');
+    expect(certainDoubles([file, live])).toHaveLength(1);
+    expect(findDoubles([file, bank({ source: 'starling', counterparty: 'Someone Else' })])).toEqual([]); // different payer
+  });
+
+  it('lists old-app records nothing in the bank backs up — from when the bank history starts, cash ones kept', () => {
+    const b = bank({ date: '2026-04-06', amountPence: 1 });
+    const lone = oldApp({ amountPence: 7500, date: '2026-05-01' });
+    const before = oldApp({ amountPence: 7500, date: '2026-03-01' });
+    const cash = oldApp({ amountPence: 7500, date: '2026-05-02', meta: { cashConfirmed: '1' } });
+    const matched = oldApp({ amountPence: 6000, date: '2026-05-10' });
+    const b2 = bank({ date: '2026-05-10' });
+    expect(unbackedOldRecords([b, b2, lone, before, cash, matched]).map((t) => t.id)).toEqual([lone.id]);
   });
 
   it('uses each line once, closest dates first, and remembers “two payments”', () => {

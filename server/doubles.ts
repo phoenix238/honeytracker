@@ -14,7 +14,10 @@ export async function mergeDouble(r: Repo, bankId: string, copyId: string): Prom
   const [bank, copy] = await Promise.all([r.getTransaction(bankId), r.getTransaction(copyId)]);
   if (!bank || !copy) throw new Error('One of those lines no longer exists');
   if (!isBankRow(bank)) throw new Error('The line to keep must be the bank’s');
-  if (isBankRow(copy)) throw new Error('Both are bank lines — the bank never records one payment twice');
+  // Two bank lines are only ever the same payment brought in from two sources (the live feed
+  // and a statement file); the statement file's line is the one that goes.
+  const statementTwin = isBankRow(copy);
+  if (statementTwin && (copy.source === 'starling' || copy.source === bank.source)) throw new Error('Both are the bank’s own lines — the bank never records one payment twice');
   if (bank.direction !== copy.direction) throw new Error('One is money in, the other money out');
 
   for (const rc of (await r.listReceipts()).filter((x) => x.transactionId === copy.id)) await r.updateReceipt(rc.id, { transactionId: bank.id });
@@ -37,7 +40,47 @@ export async function mergeDouble(r: Repo, bankId: string, copyId: string): Prom
     meta,
   });
   await r.deleteTransaction(copy.id);
+  // Bringing the same statement in again mustn't recreate it.
+  if (statementTwin && copy.sourceId) await remember(r, STATEMENT_REMOVED, `${copy.source}:${copy.sourceId}`);
   return (await r.getTransaction(bank.id))!;
+}
+
+export const STATEMENT_REMOVED = 'statement:removed';
+export const IMPORT_REMOVED = 'import:removed';
+
+async function remember(r: Repo, key: string, ...ids: string[]): Promise<void> {
+  const list = new Set((await r.getKv<string[]>(key)) ?? []);
+  for (const id of ids) list.add(id);
+  await r.setKv(key, [...list]);
+}
+
+/**
+ * Old-app records the bank doesn't back up, and that you say aren't real money in these
+ * accounts: removed, and remembered so importing the backup again doesn't bring them back.
+ * Their receipts stay (in Receipts, unattached).
+ */
+export async function removeOldRecords(r: Repo, ids: readonly string[]): Promise<number> {
+  const gone: string[] = [];
+  for (const id of ids) {
+    const t = await r.getTransaction(id);
+    if (!t || t.source !== 'import') continue;
+    await r.deleteTransaction(t.id);
+    if (t.sourceId) gone.push(t.sourceId);
+  }
+  if (gone.length) await remember(r, IMPORT_REMOVED, ...gone);
+  return gone.length;
+}
+
+/** Old-app records you confirm were paid in cash: real income, kept, not asked about again. */
+export async function keepAsCash(r: Repo, ids: readonly string[]): Promise<number> {
+  let kept = 0;
+  for (const id of ids) {
+    const t = await r.getTransaction(id);
+    if (!t || t.source !== 'import') continue;
+    await r.updateTransaction(t.id, { note: t.note.replace(/^Imported from Honey — not found in the bank feed.*$/, 'Cash (from the old app)') || t.note, meta: { cashConfirmed: '1' } });
+    kept++;
+  }
+  return kept;
 }
 
 /** "Not the same money": this pair isn't offered again. */

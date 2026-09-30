@@ -11,7 +11,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
-import { keepBoth, mergeCertainDoubles, mergeDouble } from './doubles.js';
+import { IMPORT_REMOVED, STATEMENT_REMOVED, keepAsCash, keepBoth, mergeCertainDoubles, mergeDouble, removeOldRecords } from './doubles.js';
 import { sortTransfer } from '../src/core/transfers.js';
 import { mkId } from '../src/core/id.js';
 import { buildWorkbook } from './workbook.js';
@@ -807,10 +807,12 @@ const routes: [string, RegExp, Handler][] = [
     const bank = (await r.listTransactions()).filter(isBankRow);
     // Bank rows already claimed by an earlier import batch stay claimed.
     const claimed = new Set(bank.filter((t) => t.meta.importedFrom).map((t) => t.id));
+    // Records you removed because the bank didn't back them up stay removed.
+    const removed = new Set((await r.getKv<string[]>(IMPORT_REMOVED)) ?? []);
     const out = { linked: 0, created: 0, skipped: 0, already: 0, unreadable: 0, receipts: 0 };
     for (const it of items) {
       if (!isDate(it.date) || !Number.isInteger(it.amountPence) || it.amountPence <= 0) { out.skipped++; out.unreadable++; continue; }
-      if (await r.findBySource('import', str(it.sourceId, 120))) { out.skipped++; out.already++; continue; }
+      if (removed.has(str(it.sourceId, 120)) || (await r.findBySource('import', str(it.sourceId, 120)))) { out.skipped++; out.already++; continue; }
       const already = bank.find((t) => t.meta.importedFrom === it.sourceId);
       if (already) { out.skipped++; out.already++; continue; }
       const twin = findBankTwin(it, bank, claimed);
@@ -886,12 +888,15 @@ const routes: [string, RegExp, Handler][] = [
     const account = str(b.account, 60).trim() || 'Other bank';
     const source = b.kind === 'monzo' ? 'monzo' : 'bankcsv';
     const lines = Array.isArray(b.lines) ? (b.lines as Record<string, unknown>[]).slice(0, 1000) : [];
-    const [rules, settings] = await Promise.all([r.listRules(), r.getSettings()]);
+    const [rules, settings, removedLines] = await Promise.all([r.listRules(), r.getSettings(), r.getKv<string[]>(STATEMENT_REMOVED)]);
+    const removed = new Set(removedLines ?? []);
     const out = { added: 0, sortedByRules: 0, potMoves: 0, transfersSorted: 0, already: 0, unreadable: 0 };
     for (const l of lines) {
       const amountPence = Number(l.amountPence);
       const sourceId = str(l.sourceId, 200);
       if (!isDate(l.date) || !Number.isInteger(amountPence) || amountPence <= 0 || amountPence > 1_000_000_000 || !sourceId) { out.unreadable++; continue; }
+      // A line merged into the live Starling feed's copy of the same payment isn't brought back.
+      if (removed.has(`${source}:${sourceId}`)) { out.already++; continue; }
       const ownMove = l.ownMove === true;
       const { row: ruledRow, ruled } = applyRules(rules, {
         date: l.date, amountPence, direction: l.direction === 'in' ? 'in' : 'out', source,
@@ -944,6 +949,13 @@ const routes: [string, RegExp, Handler][] = [
       }
     }
     return json({ merged, errors });
+  }],
+  // Old-app records the bank doesn't back up: remove them, or keep them as cash income.
+  ['POST', /^\/api\/old-records\/(remove|keep-cash)$/, async (req, r, [action]) => {
+    const b = await body<{ ids?: unknown }>(req);
+    const ids = (Array.isArray(b.ids) ? b.ids : []).slice(0, 2000).map((x) => str(x, 64)).filter(Boolean);
+    const changed = action === 'remove' ? await removeOldRecords(r, ids) : await keepAsCash(r, ids);
+    return json({ changed });
   }],
   ['POST', /^\/api\/doubles\/keep-both$/, async (req, r) => {
     const b = await body(req);

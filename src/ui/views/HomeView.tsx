@@ -7,7 +7,7 @@ import { parsePence, formatGBP } from '../../core/money';
 import { owedSummary } from '../../core/invoices';
 import type { App } from '../useApp';
 import { StreamSheet } from './StreamSheet';
-import { DoublesSheet, doublesCount } from './DoublesSheet';
+import { DoublesSheet, checkCounts, checkSummary as summary } from './DoublesSheet';
 import type { View } from '../Shell';
 
 // The one-glance answer: how much should be in the tax pot right now, what HMRC wants next
@@ -21,7 +21,7 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
   /** The stream whose income and costs are open ('none' for business lines with no stream yet). */
   const [streamOpen, setStreamOpen] = useState<string | null>(null);
   const [doublesOpen, setDoublesOpen] = useState(false);
-  const twice = doublesCount(app);
+  const check = checkCounts(app);
   const openSummary = streamOpen ? p.streams.find((s) => (s.streamId ?? 'none') === streamOpen) ?? null : null;
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
   const next = p.upcoming[0];
@@ -113,11 +113,11 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
         }}
       />
 
-      {twice > 0 && (
+      {check.total > 0 && (
         <Card onClick={() => setDoublesOpen(true)} style={{ borderColor: T.danger + '66' }}>
-          <Label color={T.danger}>Counted twice?</Label>
+          <Label color={T.danger}>Check for doubles</Label>
           <div style={{ fontSize: 14, color: T.text, marginTop: 6, lineHeight: 1.6 }}>
-            {twice} look{twice === 1 ? 's' : ''} like the same money recorded twice — your totals are too high until they’re checked
+            {summary(check)} — your totals are too high until they’re checked
           </div>
         </Card>
       )}

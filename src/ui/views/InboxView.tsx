@@ -8,7 +8,7 @@ import { categoryInfo } from '../../core/hmrc';
 import { api } from '../api';
 import type { Transaction } from '../../core/types';
 import type { App } from '../useApp';
-import { DoublesSheet, doublesCount } from './DoublesSheet';
+import { DoublesSheet, checkCounts, checkSummary as summary } from './DoublesSheet';
 
 // Every movement of money. Sorting happens in the swipe deck; this is where you look things up,
 // see the totals, and find what you swiped away ("Not business") to put it back. Records brought
@@ -30,7 +30,7 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
   const [q, setQ] = useState('');
   const [more, setMore] = useState(false);
   const [doublesOpen, setDoublesOpen] = useState(false);
-  const twice = doublesCount(app);
+  const check = checkCounts(app);
   const [openId, setOpenId] = useState<string | null>(null);
   const streams = new Map(data.streams.map((s) => [s.id, s]));
 
@@ -89,10 +89,10 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
         </Button>
       )}
 
-      {twice > 0 && (
+      {check.total > 0 && (
         <Card onClick={() => setDoublesOpen(true)} style={{ borderColor: T.danger + '66' }}>
-          <Label color={T.danger}>Counted twice?</Label>
-          <div style={{ fontSize: 14, marginTop: 6 }}>{twice} look{twice === 1 ? 's' : ''} like the same money recorded twice — tap to check</div>
+          <Label color={T.danger}>Check for doubles</Label>
+          <div style={{ fontSize: 14, marginTop: 6 }}>{summary(check)} — tap to go through them</div>
         </Card>
       )}
       {doublesOpen && <DoublesSheet app={app} onClose={() => setDoublesOpen(false)} />}
@@ -184,6 +184,7 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
             <Chip active={filter === 'auto'} onClick={() => setFilter('auto')}>Sorted automatically</Chip>
             {aiRows.length > 0 && <Chip active={filter === 'ai'} color={T.green} onClick={() => setFilter('ai')}>AI: check ({aiRows.length})</Chip>}
           </div>
+          <Button onClick={() => setDoublesOpen(true)}>🔍 Check for doubles{check.total ? ` (${check.total})` : ''}</Button>
           {data.config.aiSort && aiQueue > 0 && !app.aiProgress && (
             <Button onClick={app.aiSortAll} disabled={app.busy}>
               🤖 Sort {aiQueue} with AI, then I’ll check

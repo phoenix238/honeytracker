@@ -1027,6 +1027,41 @@ describe('the same money counted twice', () => {
     expect(state.transactions.find((t: Transaction) => t.id === bankRow.id)).toMatchObject({ bucket: 'business_income', meta: { cstlBookingId: 'bx' } });
   });
 
+  it('finds a payment brought in twice (live feed + statement file), merges it, and the statement can’t bring it back', async () => {
+    await signIn();
+    feed.push(item('live-1', 60, 'IN', daysAgo(5), { counterPartyName: 'LARA BLIGH' }));
+    await call('POST', '/api/sync', {});
+    const liveDate = (await call('GET', '/api/state')).data.transactions[0].date;
+    const lines = [{ sourceId: 'stmt-1', date: liveDate, amountPence: 6000, direction: 'in', counterparty: 'Lara Bligh', reference: '', ownMove: false, bankType: 'Faster payment', bankCategory: '' }];
+    // Merged on arrival: same day, same amount, same name, nothing else it could be.
+    expect((await call('POST', '/api/import/bank', { importId: 'stmt-import-1', account: 'Starling CSV', kind: 'bankcsv', lines })).data).toMatchObject({ added: 1, doublesMerged: 1 });
+    let state = (await call('GET', '/api/state')).data;
+    expect(state.transactions.map((t: Transaction) => t.source)).toEqual(['starling']);
+    expect((await call('POST', '/api/import/bank', { importId: 'stmt-import-2', account: 'Starling CSV', kind: 'bankcsv', lines })).data).toMatchObject({ added: 0, already: 1 });
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions).toHaveLength(1);
+  });
+
+  it('old-app records the bank doesn’t back up can be kept as cash or removed — and removed ones stay removed', async () => {
+    await signIn();
+    feed.push(item('any-1', 1, 'OUT', daysAgo(30)));
+    await call('POST', '/api/sync', {});
+    const items = [
+      { sourceId: 'honeypot:entry:cash1', kind: 'income', date: daysAgo(10).slice(0, 10), amountPence: 3000, label: 'Cash client', category: null, imageDataUrl: null },
+      { sourceId: 'honeypot:entry:gone1', kind: 'income', date: daysAgo(9).slice(0, 10), amountPence: 7700, label: 'Not real', category: null, imageDataUrl: null },
+    ];
+    await call('POST', '/api/import', { items, streamId: null });
+    const rows: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    const cash = rows.find((t) => t.sourceId === 'honeypot:entry:cash1')!;
+    const gone = rows.find((t) => t.sourceId === 'honeypot:entry:gone1')!;
+    expect((await call('POST', '/api/old-records/keep-cash', { ids: [cash.id] })).data.changed).toBe(1);
+    expect((await call('POST', '/api/old-records/remove', { ids: [gone.id] })).data.changed).toBe(1);
+    const after: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    expect(after.find((t) => t.id === cash.id)).toMatchObject({ meta: { cashConfirmed: '1' }, note: 'Cash (from the old app)' });
+    expect(after.find((t) => t.id === gone.id)).toBeUndefined();
+    expect((await call('POST', '/api/import', { items, streamId: null })).data).toMatchObject({ created: 0, already: 2 });
+  });
+
   it('“two payments” keeps both, and bank lines are never merged away', async () => {
     await signIn();
     const date = daysAgo(11).slice(0, 10);
