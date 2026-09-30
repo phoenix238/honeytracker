@@ -123,6 +123,7 @@ export const api = {
   uploadReceipt: (r: { filename: string; mime: string; dataBase64: string; transactionId?: string | null }) =>
     call<{ receipt: Receipt; matchedTransactionId: string | null; readError: string; read: boolean }>('POST', '/api/receipts', r),
   updateReceipt: (id: string, patch: Partial<Receipt>) => call<Receipt>('PATCH', `/api/receipts/${id}`, patch),
+  receiptsAside: (ids: string[], notNeeded: boolean) => call<{ changed: number }>('POST', '/api/receipts/aside', { ids, notNeeded }),
   receiptToExpense: (id: string, body: { streamId: string | null; category?: string; date?: string; amountPence?: number; paidWith?: string }) =>
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),
   deleteReceipt: (id: string) => call<{ ok: true }>('DELETE', `/api/receipts/${id}`),

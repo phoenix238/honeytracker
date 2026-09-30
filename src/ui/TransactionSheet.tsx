@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Bucket, ExpenseCategory, Transaction } from '../core/types';
+import type { Bucket, ExpenseCategory, Receipt, Transaction } from '../core/types';
 import { CATEGORIES } from '../core/hmrc';
 import { looseReceiptsFor, receiptOrigin } from '../core/receiptMatch';
 import { formatGBP } from '../core/money';
 import { suggestPattern } from '../core/rules';
 import { T, fonts } from './theme';
 import { BUCKET_COLOR, BUCKET_LABEL, Button, Chip, Field, Label, Money, Sheet, fmtDate, inputStyle } from './components';
-import { api, receiptFileUrl } from './api';
+import { api } from './api';
+import { ReceiptViewer } from './ReceiptViewer';
 import type { App } from './useApp';
 import { CameraIcon } from './icons';
 
@@ -45,6 +46,7 @@ export function TransactionSheet({
   const [pattern, setPattern] = useState('');
   const [history, setHistory] = useState<{ at: string; action: string; detail: unknown }[] | null>(null);
   const [finding, setFinding] = useState(false);
+  const [viewing, setViewing] = useState<Receipt | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -212,10 +214,11 @@ export function TransactionSheet({
           </span>
         )}
         {receipts.map((r) => (
-          <a key={r.id} href={receiptFileUrl(r.id)} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: T.blue }}>
-            {r.merchant || r.filename} {r.totalPence != null ? `· ${(r.totalPence / 100).toFixed(2)}` : ''}
-          </a>
+          <button key={r.id} type="button" onClick={() => setViewing(r)} style={{ background: 'none', border: 'none', padding: 0, textAlign: 'left', cursor: 'pointer', fontSize: 13, color: T.blue }}>
+            🧾 {r.merchant || r.filename} {r.totalPence != null ? `· ${formatGBP(r.totalPence)}` : ''}
+          </button>
         ))}
+        <ReceiptViewer receipt={viewing} onClose={() => setViewing(null)} />
         <input
           ref={fileRef}
           type="file"
@@ -232,6 +235,7 @@ export function TransactionSheet({
           <FindReceipt
             app={app}
             txn={txn}
+            onView={setViewing}
             onDone={() => setFinding(false)}
           />
         )}
@@ -311,7 +315,7 @@ export function TransactionSheet({
  * Pick the receipt for this line by hand, from everything brought in but not yet attached —
  * emails and Drive files the Google finder kept, and photos you snapped. Best guesses first.
  */
-function FindReceipt({ app, txn, onDone }: { app: App; txn: Transaction; onDone: () => void }) {
+function FindReceipt({ app, txn, onView, onDone }: { app: App; txn: Transaction; onView: (r: Receipt) => void; onDone: () => void }) {
   const list = looseReceiptsFor(txn, app.data!.receipts);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -340,7 +344,7 @@ function FindReceipt({ app, txn, onDone }: { app: App; txn: Transaction; onDone:
                 </span>
               </span>
             </button>
-            <a href={receiptFileUrl(r.id)} target="_blank" rel="noreferrer" aria-label="Look at this receipt" style={{ fontSize: 16, textDecoration: 'none' }}>👁</a>
+            <button type="button" onClick={() => onView(r)} aria-label="Look at this receipt" style={{ background: 'none', border: 'none', padding: 0, fontSize: 16, cursor: 'pointer' }}>👁</button>
           </div>
         );
       })}

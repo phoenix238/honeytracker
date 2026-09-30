@@ -158,22 +158,36 @@ ${CATEGORY_GUIDE}
 
 Rules: copy numbers exactly as printed; the total is what they actually paid; never guess a total you can't read — leave it empty instead.`;
 
-/** Read a file (PDF or photo) or, when there's none, the email itself. */
+/** Letters only, no "Ltd": "PHOENIX TANNER LTD" and "Phoenix Tanner" read the same. */
+const nameKey = (s: string) => s.toLowerCase().replace(/\b(ltd|limited|the)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim();
+
+/** Is this "shop" actually you? An invoice you sent reads as one from you to someone else. */
+export function issuedBySelf(merchant: string, self: readonly string[]): boolean {
+  const m = nameKey(merchant);
+  return self.map(nameKey).some((n) => n.length >= 3 && (m === n || ` ${m} `.includes(` ${n} `)));
+}
+
+/** Read a file (PDF or photo) or, when there's none, the email itself. `self` is your name and business name. */
 export async function readFoundDoc(
-  input: { mime?: string; dataBase64?: string; emailText?: string },
+  input: { mime?: string; dataBase64?: string; emailText?: string; self?: readonly string[] },
   client = anthropicClient(),
 ): Promise<FoundDoc | null> {
   const file = input.mime && input.dataBase64 ? fileBlock(input.mime, input.dataBase64) : null;
+  const self = (input.self ?? []).map((n) => n.trim()).filter(Boolean);
   const content: Anthropic.Beta.BetaContentBlockParam[] = [];
   if (file) content.push(file);
   if (input.emailText) content.push({ type: 'text', text: `The email it came with:\n\n${input.emailText.slice(0, 12_000)}` });
   if (!content.length) return null;
+  if (self.length) {
+    content.push({ type: 'text', text: `The person is ${self.join(', trading as ')}. Anything issued BY them — an invoice or receipt with their name as the seller — is income, not a purchase.` });
+  }
   content.push({ type: 'text', text: DOC_PROMPT });
   // A purchase that doesn't add up is re-read; so is an attached PDF or photo the quick read
   // waved away as "not a purchase" — attachments are where real receipts usually are.
   const out = await ask(client, content, DOC_SCHEMA, (o) => (o.kind === 'purchase' ? doubtAbout(o) !== '' : Boolean(file) && o.kind === 'other'), false);
   if (!out) return null;
-  const kind = out.kind === 'purchase' || out.kind === 'income' ? out.kind : 'other';
+  // Belt and braces: a "purchase" from yourself is one of your own invoices.
+  const kind = out.kind === 'purchase' && issuedBySelf(out.merchant ?? '', self) ? 'income' : out.kind === 'purchase' || out.kind === 'income' ? out.kind : 'other';
   return { kind, ...tidy(out) };
 }
 

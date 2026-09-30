@@ -107,6 +107,11 @@ export interface Receipt {
   description: string;
   /** The ledger row it evidences, once matched. */
   transactionId: string | null;
+  /**
+   * You've moved it out of the way on the Receipts screen — a personal buy, say. Only the list
+   * changes: if its bank line turns up and you count it as business, it still attaches.
+   */
+  notNeeded?: boolean;
 }
 
 /**

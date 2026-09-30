@@ -548,9 +548,18 @@ const routes: [string, RegExp, Handler][] = [
     if (b.totalPence !== undefined) patch.totalPence = b.totalPence === null ? null : pence(b.totalPence);
     if (b.suggestedCategory !== undefined) patch.suggestedCategory = isCategory(b.suggestedCategory) ? b.suggestedCategory : null;
     if (b.description !== undefined) patch.description = str(b.description, 500);
+    if (b.notNeeded !== undefined) patch.notNeeded = b.notNeeded === true;
     const updated = await r.updateReceipt(id!, patch);
     if (!updated) throw new HttpError(404, 'Not found');
     return json(updated);
+  }],
+  // Move receipts out of the way on the Receipts screen (or bring them back), many at once.
+  ['POST', /^\/api\/receipts\/aside$/, async (req, r) => {
+    const b = await body<{ ids?: unknown; notNeeded?: unknown }>(req);
+    const ids = (Array.isArray(b.ids) ? b.ids : []).slice(0, 2000).map((x) => str(x, 64)).filter(Boolean);
+    let changed = 0;
+    for (const id of ids) if (await r.updateReceipt(id, { notNeeded: b.notNeeded === true })) changed++;
+    return json({ changed });
   }],
   // Paid in cash or on a card that isn't synced: the receipt becomes its own expense row.
   ['POST', /^\/api\/receipts\/([\w-]+)\/expense$/, async (req, r, [id]) => {

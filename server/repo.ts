@@ -60,6 +60,7 @@ function toReceipt(r: Row): Receipt {
     suggestedCategory: (r.suggested_category ?? null) as ExpenseCategory | null,
     description: s(r.description),
     transactionId: r.transaction_id == null ? null : s(r.transaction_id),
+    notNeeded: r.not_needed === true || r.not_needed === 't',
   };
 }
 
@@ -104,7 +105,7 @@ function toInvoice(r: Row): Invoice {
 export type InvoiceDraft = Omit<Invoice, 'id' | 'number' | 'paidTransactionId' | 'createdAt' | 'updatedAt'>;
 
 const TXN_COLS = 'id, date, amount_pence, direction, source, source_id, counterparty, reference, bucket, stream_id, category, business_percent, note, classified_by, meta, created_at, updated_at';
-const RECEIPT_COLS = 'id, uploaded_at, filename, mime, merchant, date, total_pence, vat_pence, suggested_category, description, transaction_id';
+const RECEIPT_COLS = 'id, uploaded_at, filename, mime, merchant, date, total_pence, vat_pence, suggested_category, description, transaction_id, not_needed';
 
 export type NewTransaction = Omit<Transaction, 'id' | 'createdAt' | 'updatedAt' | 'receiptIds'>;
 
@@ -318,8 +319,8 @@ export function repo(db: Db) {
       if (!existing) return null;
       const next = { ...existing, ...patch };
       await db.query(
-        `UPDATE receipts SET merchant=$2, date=$3, total_pence=$4, vat_pence=$5, suggested_category=$6, description=$7, transaction_id=$8 WHERE id=$1`,
-        [id, next.merchant, next.date, next.totalPence, next.vatPence, next.suggestedCategory, next.description, next.transactionId],
+        `UPDATE receipts SET merchant=$2, date=$3, total_pence=$4, vat_pence=$5, suggested_category=$6, description=$7, transaction_id=$8, not_needed=$9 WHERE id=$1`,
+        [id, next.merchant, next.date, next.totalPence, next.vatPence, next.suggestedCategory, next.description, next.transactionId, Boolean(next.notNeeded)],
       );
       if (patch.transactionId !== undefined && patch.transactionId !== existing.transactionId) {
         await api.audit(patch.transactionId ?? existing.transactionId, patch.transactionId ? 'receipt_attached' : 'receipt_detached', { receiptId: id }, opts.batchId ?? null);

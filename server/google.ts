@@ -76,7 +76,9 @@ export async function takeFoundItem(r: Repo, item: FoundItem): Promise<{ outcome
       ? `From: ${item.from}\nSubject: ${item.subject}\nDate: ${item.date}\n\n${item.text}`
       : item.text;
   // Throws on an API failure, so the item isn't marked seen and the script sends it again later.
-  const doc = await readFoundDoc({ mime: item.file?.mime, dataBase64: item.file?.dataBase64, emailText: emailText.trim() || undefined });
+  const { profile, name } = await r.getSettings();
+  const self = [profile.name || name, profile.businessName].filter(Boolean);
+  const doc = await readFoundDoc({ mime: item.file?.mime, dataBase64: item.file?.dataBase64, emailText: emailText.trim() || undefined, self });
 
   let outcome: Outcome;
   let receipt: Receipt | null = null;

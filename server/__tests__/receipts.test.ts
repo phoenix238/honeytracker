@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
-import { doubtAbout, extractReceipt, readFoundDoc } from '../receipts';
+import { doubtAbout, extractReceipt, issuedBySelf, readFoundDoc } from '../receipts';
 
 // A stand-in for Claude: each model gives its own answer, and every call is recorded.
 function fakeClient(answers: Record<string, object | Error>) {
@@ -89,5 +89,23 @@ describe('what counts as a misread', () => {
     expect(doubtAbout({ ...good, date: '2012-01-01' }, today)).toBe('date out of range');
     expect(doubtAbout({ ...good, vat: '20.00' }, today)).toBe('VAT bigger than possible');
     expect(doubtAbout({ ...good, vat: '' }, today)).toBe(''); // no VAT shown is normal
+  });
+});
+
+describe('your own invoices are income, not receipts', () => {
+  it('knows your name and business name, whatever the capitals or "Ltd"', () => {
+    const me = ['Phoenix Tanner', 'Honey Bodywork'];
+    expect(issuedBySelf('PHOENIX TANNER', me)).toBe(true);
+    expect(issuedBySelf('Honey Bodywork Ltd', me)).toBe(true);
+    expect(issuedBySelf('Tanner Bros Plumbing', me)).toBe(false);
+    expect(issuedBySelf('Honey', me)).toBe(false);
+    expect(issuedBySelf('Shell', [])).toBe(false);
+  });
+  it('tells the reader who you are, and overrules it if it still calls your invoice a purchase', async () => {
+    const mine = { kind: 'purchase', ...good, merchant: 'Phoenix Tanner' };
+    const { client, calls } = fakeClient({ 'claude-haiku-4-5': mine });
+    const doc = await readFoundDoc({ mime: 'application/pdf', dataBase64: png, self: ['Phoenix Tanner'] }, client);
+    expect(doc?.kind).toBe('income');
+    expect(JSON.stringify(calls[0]!.params.messages)).toContain('The person is Phoenix Tanner');
   });
 });

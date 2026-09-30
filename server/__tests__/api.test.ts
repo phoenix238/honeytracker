@@ -868,6 +868,22 @@ describe('sorting in batches, and undo', () => {
     expect(back.data).toMatchObject({ bucket: 'unreviewed', classifiedBy: null });
   });
 
+  it('receipts can be moved aside and back, one or many, without deleting them', async () => {
+    await signIn();
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
+    const a = (await call('POST', '/api/receipts', { filename: 'a.png', mime: 'image/png', dataBase64: png })).data.receipt;
+    const b = (await call('POST', '/api/receipts', { filename: 'b.png', mime: 'image/png', dataBase64: png })).data.receipt;
+    expect(a.notNeeded).toBe(false);
+    expect((await call('POST', '/api/receipts/aside', { ids: [a.id, b.id, 'gone'], notNeeded: true })).data.changed).toBe(2);
+    let receipts = (await call('GET', '/api/state')).data.receipts;
+    expect(receipts.map((x: { notNeeded: boolean }) => x.notNeeded)).toEqual([true, true]);
+    expect((await call('PATCH', `/api/receipts/${a.id}`, { notNeeded: false })).data.notNeeded).toBe(false);
+    receipts = (await call('GET', '/api/state')).data.receipts;
+    expect(receipts).toHaveLength(2);
+    expect((await call('DELETE', `/api/receipts/${a.id}`)).status).toBe(200);
+    expect((await call('GET', '/api/state')).data.receipts).toHaveLength(1);
+  });
+
   it('a receipt matched to a row gives it the only stream there is', async () => {
     const { stream, by } = await setup();
     const t = by('t1');
