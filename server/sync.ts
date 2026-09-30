@@ -2,6 +2,7 @@ import type { Repo, NewTransaction } from './repo.js';
 import { starlingTokens, listAccounts, fetchLines, type BankLine } from './starling.js';
 import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
+import { sortTransfer } from '../src/core/transfers.js';
 import { mergeCertainDoubles } from './doubles.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
 import type { Invoice, Rule, Settings, Transaction } from '../src/core/types.js';
@@ -53,7 +54,8 @@ export async function syncStarling(repo: Repo, result: SyncResult, fetchImpl: ty
   const tokens = starlingTokens();
   result.starling.configured = tokens.length > 0;
   if (!tokens.length) return;
-  const rules = await repo.listRules();
+  const [rules, settings] = await Promise.all([repo.listRules(), repo.getSettings()]);
+  const names = [settings.profile.name || settings.name, settings.profile.businessName].filter(Boolean);
   const since = syncWindowStart(londonDate(new Date()));
   // Overlap the watermark by 3 days: a transaction can settle after later ones.
   const watermark = await repo.getKv<Record<string, string>>('starling:watermarks') ?? {};
@@ -69,10 +71,12 @@ export async function syncStarling(repo: Repo, result: SyncResult, fetchImpl: ty
         let row = bankLineToRow(line);
         const rule = row.bucket === 'unreviewed' ? findRule(rules, row) : null;
         if (rule) row = stripIds(applyRule(rule, withIds(row)));
-        const inserted = await repo.insertTransaction(row);
+        // Bank transfers: sent ones are personal, your own money moving is a transfer.
+        const sorted = !rule && settings.transfersPersonal ? sortTransfer(row, names) : row;
+        const inserted = await repo.insertTransaction(sorted);
         if (inserted) {
           result.starling.newRows++;
-          if (rule) result.starling.autoClassified++;
+          if (rule || sorted !== row) result.starling.autoClassified++;
         }
       }
       watermark[account.accountUid] = startedAt.toISOString();

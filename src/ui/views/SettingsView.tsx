@@ -5,7 +5,8 @@ import { categoryInfo } from '../../core/hmrc';
 import { formatAmount, parsePence } from '../../core/money';
 import { parseHoneypotBackup, type ImportedItem } from '../../core/importers';
 import { api } from '../api';
-import type { BusinessProfile, Stream } from '../../core/types';
+import { isBankRow, type BusinessProfile, type Stream } from '../../core/types';
+import { transferKind } from '../../core/transfers';
 import type { App } from '../useApp';
 import { GoogleSection } from './GoogleSection';
 import { SpreadsheetSection } from './SpreadsheetSection';
@@ -28,6 +29,7 @@ export function SettingsView({ app }: { app: App }) {
         <StreamsSection app={app} />
         <ConnectionsSection app={app} />
         <GoogleSection app={app} />
+        <TransfersSection app={app} />
         <RulesSection app={app} />
         <TaxPotSection app={app} />
         <Section title="Receipts">
@@ -211,6 +213,54 @@ function ConnectionsSection({ app }: { app: App }) {
         {row(config.receiptsAi, 'Receipt reading', 'Set ANTHROPIC_API_KEY to read receipts and sort with AI. Use a key made inside a workspace — or add ANTHROPIC_WORKSPACE_ID too.')}
         {row(config.cron, 'Daily automatic sync', 'Set CRON_SECRET so the daily sync can run by itself.')}
         {lastSync?.errors.length ? <div style={{ fontSize: 12, color: T.danger, marginTop: 8 }}>Last sync: {lastSync.errors.join(' — ')}</div> : null}
+      </Card>
+    </Section>
+  );
+}
+
+/** Bank transfers sort themselves: the ones you send are personal, your own money moving is a transfer. */
+function TransfersSection({ app }: { app: App }) {
+  const data = app.data!;
+  const on = data.settings.transfersPersonal;
+  const names = [data.settings.profile.name || data.settings.name, data.settings.profile.businessName].filter(Boolean);
+  const waiting = data.transactions.filter((t) => isBankRow(t) && t.bucket === 'unreviewed' && !t.classifiedBy && transferKind(t, names)).length;
+  const [last, setLast] = useState<{ batchId: string; changed: number } | null>(null);
+  return (
+    <Section title="Bank transfers">
+      <Card style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, lineHeight: 1.5 }}>
+          <input type="checkbox" checked={on} onChange={(e) => app.saveSettings({ transfersPersonal: e.target.checked })} style={{ marginTop: 3 }} />
+          <span>
+            <strong>Sort bank transfers for me</strong>
+            <span style={{ display: 'block', fontSize: 12, color: T.textMuted }}>
+              Money you <em>send</em> by bank transfer or standing order is personal. Money moving between your own accounts (Spaces, pots, Monzo ↔ Starling in your
+              name) isn’t income or a cost. Money that <em>arrives</em> by transfer from someone else is still yours to sort — that’s how clients pay. Your own rules
+              come first, so a transfer you’ve made a rule for (room hire, say) still goes where you said.
+            </span>
+          </span>
+        </label>
+        {!names.length && on && (
+          <div style={{ fontSize: 12, color: T.accentBright }}>Add your name in Your details below, so moves between your own accounts are recognised.</div>
+        )}
+        {on && waiting > 0 && (
+          <Button
+            disabled={app.busy}
+            onClick={async () => {
+              const res = await api.applyTransfers().catch((e: Error) => { app.notify(e.message); return null; });
+              if (!res) return;
+              setLast(res.batchId ? { batchId: res.batchId, changed: res.changed } : null);
+              await app.reload();
+            }}
+          >
+            Sort the {waiting} transfer{waiting === 1 ? '' : 's'} waiting now
+          </Button>
+        )}
+        {last && (
+          <div style={{ fontSize: 13, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+            <span>{last.changed} sorted.</span>
+            <Button tone="quiet" style={{ padding: '4px 8px' }} onClick={async () => { await app.undoBatch(last.batchId); setLast(null); }}>Undo</Button>
+          </div>
+        )}
       </Card>
     </Section>
   );

@@ -252,6 +252,11 @@ export interface Settings {
    * Every AI read (receipts, Sort with AI) gets it, so it judges costs the way you would.
    */
   aboutMe: string;
+  /**
+   * Sort bank transfers without asking: ones you send are personal, moves between your own
+   * accounts are transfers. Money arriving by transfer from others is still yours to sort.
+   */
+  transfersPersonal: boolean;
 }
 
 export const DEFAULT_TAX_YEAR_FACTS: TaxYearFacts = {
@@ -271,6 +276,7 @@ export const DEFAULT_SETTINGS: Settings = {
   setAsidePercent: 20,
   calendarUrl: '',
   aboutMe: '',
+  transfersPersonal: true,
 };
 
 export function factsFor(settings: Settings, taxYear: number): TaxYearFacts {

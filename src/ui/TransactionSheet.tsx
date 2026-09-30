@@ -119,7 +119,7 @@ export function TransactionSheet({
           From {txn.source === 'starling' ? `Starling${txn.meta.account ? ` · ${txn.meta.account}` : ''}`
             : txn.source === 'monzo' || txn.source === 'bankcsv' ? `${txn.meta.account || 'a bank'} statement`
             : txn.source === 'cstl' ? 'CSTL' : txn.source === 'import' ? 'old Honey app' : 'you (cash / manual)'}
-          {txn.classifiedBy && txn.classifiedBy !== 'user' && ` · classified by ${txn.classifiedBy === 'rule' ? 'a rule' : txn.classifiedBy === 'cstl' ? 'CSTL' : txn.classifiedBy === 'ai' ? 'AI' : txn.classifiedBy === 'invoice' ? 'its invoice' : 'the import'}`}
+          {txn.classifiedBy && txn.classifiedBy !== 'user' && ` · classified by ${txn.meta.autoSorted === 'transfer' ? 'your bank-transfers setting' : txn.classifiedBy === 'rule' ? 'a rule' : txn.classifiedBy === 'cstl' ? 'CSTL' : txn.classifiedBy === 'ai' ? 'AI' : txn.classifiedBy === 'invoice' ? 'its invoice' : 'the import'}`}
         </div>
         {txn.classifiedBy === 'ai' && (
           <div style={{ color: T.accentBright }}>

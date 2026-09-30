@@ -916,6 +916,42 @@ describe('sorting in batches, and undo', () => {
   });
 });
 
+describe('bank transfers', () => {
+  it('sorts transfers you send and your own money moving; leaves client payments; rules come first', async () => {
+    await signIn();
+    const s = (await call('GET', '/api/state')).data.settings;
+    await call('PUT', '/api/settings', { profile: { ...s.profile, name: 'Phoenix Tanner' } });
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    await call('POST', '/api/rules', { field: 'counterparty', pattern: 'studio hire', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
+    feed.push(item('tr-rent', 500, 'OUT', daysAgo(3), { counterPartyName: 'LANDLORD', source: 'FASTER_PAYMENTS_OUT' }));
+    feed.push(item('tr-own', 200, 'IN', daysAgo(3), { counterPartyName: 'PHOENIX TANNER', source: 'FASTER_PAYMENTS_IN' }));
+    feed.push(item('tr-client', 60, 'IN', daysAgo(3), { counterPartyName: 'LARA BLIGH', source: 'FASTER_PAYMENTS_IN' }));
+    feed.push(item('tr-studio', 40, 'OUT', daysAgo(3), { counterPartyName: 'STUDIO HIRE LTD', source: 'FASTER_PAYMENTS_OUT' }));
+    await call('POST', '/api/sync', {});
+    const rows: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    const by = (uid: string) => rows.find((t) => t.sourceId === uid)!;
+    expect(by('tr-rent')).toMatchObject({ bucket: 'personal', classifiedBy: 'rule', meta: { autoSorted: 'transfer' } });
+    expect(by('tr-own').bucket).toBe('transfer');
+    expect(by('tr-client').bucket).toBe('unreviewed');
+    expect(by('tr-studio')).toMatchObject({ bucket: 'business_expense', category: 'premisesRunningCosts' });
+  });
+
+  it('switched off, leaves them to you — and sorting the waiting ones later can be undone', async () => {
+    await signIn();
+    await call('PUT', '/api/settings', { transfersPersonal: false });
+    feed.push(item('tr-off', 25, 'OUT', daysAgo(2), { counterPartyName: 'A FRIEND', source: 'FASTER_PAYMENTS_OUT' }));
+    await call('POST', '/api/sync', {});
+    const id = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.sourceId === 'tr-off').id;
+    const res = (await call('POST', '/api/transfers/apply', {})).data;
+    expect(res.changed).toBe(1);
+    let t = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === id);
+    expect(t.bucket).toBe('personal');
+    await call('POST', `/api/batches/${res.batchId}/undo`, {});
+    t = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === id);
+    expect(t).toMatchObject({ bucket: 'unreviewed', classifiedBy: null });
+  });
+});
+
 describe('the same money counted twice', () => {
   const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
 
@@ -1017,7 +1053,7 @@ describe('other banks and spreadsheets', () => {
     const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
     await call('POST', '/api/rules', { field: 'counterparty', pattern: 'whr consulting', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
     const first = await call('POST', '/api/import/bank', { importId: 'import-monzo-1', account: 'Monzo', kind: 'monzo', lines });
-    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, already: 0, unreadable: 0, doublesMerged: 0 });
+    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, transfersSorted: 0, already: 0, unreadable: 0, doublesMerged: 0 });
     const again = await call('POST', '/api/import/bank', { importId: 'import-monzo-2', account: 'Monzo', kind: 'monzo', lines });
     expect(again.data).toMatchObject({ added: 0, already: 3 });
 

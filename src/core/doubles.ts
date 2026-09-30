@@ -1,4 +1,5 @@
 import { isBankRow, type Transaction } from './types.js';
+import { isYou } from './transfers.js';
 
 // The same money recorded twice: once by the bank, and once somewhere else — the old app, CSTL
 // marking a session paid in cash, an invoice marked "paid in cash", or a line you added by hand.
@@ -89,20 +90,11 @@ export function certainDoubles(txns: readonly Transaction[]): Double[] {
   return findDoubles(txns).filter((d) => d.copy.source === 'import' && d.exact && d.days <= 6 && d.alone);
 }
 
-/** Letters only, no "Ltd"/"Mr": names compare however the bank writes them. */
-const nameKey = (s: string) => s.toLowerCase().replace(/\b(ltd|limited|mr|mrs|ms|mx|miss)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim();
-
 /**
  * Money in from yourself (your other bank account, your savings) counted as business income:
  * it was income once already, when it first arrived — or it was never income at all.
  */
 export function ownMoneyAsIncome(txns: readonly Transaction[], yourNames: readonly string[]): Transaction[] {
-  const names = yourNames.map(nameKey).filter((n) => n.length >= 5);
-  if (!names.length) return [];
-  return txns.filter((t) => {
-    if (!isBankRow(t) || t.direction !== 'in' || t.bucket !== 'business_income' || t.meta.invoiceId) return false;
-    // Who it came from only — clients often put your name in the reference.
-    const who = ` ${nameKey(t.counterparty)} `;
-    return names.some((n) => who.includes(` ${n} `));
-  });
+  // Who it came from only — clients often put your name in the reference.
+  return txns.filter((t) => isBankRow(t) && t.direction === 'in' && t.bucket === 'business_income' && !t.meta.invoiceId && isYou(t.counterparty, yourNames));
 }

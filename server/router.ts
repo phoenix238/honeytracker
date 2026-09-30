@@ -12,6 +12,8 @@ import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { keepBoth, mergeCertainDoubles, mergeDouble } from './doubles.js';
+import { sortTransfer } from '../src/core/transfers.js';
+import { mkId } from '../src/core/id.js';
 import { buildWorkbook } from './workbook.js';
 import { eventsBetween, fetchCalendar } from './calendar.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
@@ -171,6 +173,11 @@ function invoiceDraft(b: Record<string, unknown>, current?: Invoice, terms = 14)
     notes: b.notes !== undefined ? str(b.notes, 1000) : current?.notes ?? '',
     status: (current?.status ?? 'draft') as Invoice['status'],
   };
+}
+
+/** Your name and business name, as a bank might write them. */
+function yourNamesOf(settings: Settings): string[] {
+  return [settings.profile.name || settings.name, settings.profile.businessName].filter(Boolean);
 }
 
 /** What the AI readers are told about you: your own words, your kinds of work, your names. */
@@ -477,6 +484,7 @@ const routes: [string, RegExp, Handler][] = [
       setAsidePercent: b.setAsidePercent !== undefined ? setAside(b.setAsidePercent) : current.setAsidePercent,
       calendarUrl: b.calendarUrl !== undefined ? calendarLink(b.calendarUrl) : current.calendarUrl,
       aboutMe: b.aboutMe !== undefined ? str(b.aboutMe, 3000) : current.aboutMe,
+      transfersPersonal: b.transfersPersonal !== undefined ? b.transfersPersonal === true : current.transfersPersonal,
     };
     await r.saveSettings(next);
     return json(next);
@@ -872,14 +880,14 @@ const routes: [string, RegExp, Handler][] = [
     const account = str(b.account, 60).trim() || 'Other bank';
     const source = b.kind === 'monzo' ? 'monzo' : 'bankcsv';
     const lines = Array.isArray(b.lines) ? (b.lines as Record<string, unknown>[]).slice(0, 1000) : [];
-    const rules = await r.listRules();
-    const out = { added: 0, sortedByRules: 0, potMoves: 0, already: 0, unreadable: 0 };
+    const [rules, settings] = await Promise.all([r.listRules(), r.getSettings()]);
+    const out = { added: 0, sortedByRules: 0, potMoves: 0, transfersSorted: 0, already: 0, unreadable: 0 };
     for (const l of lines) {
       const amountPence = Number(l.amountPence);
       const sourceId = str(l.sourceId, 200);
       if (!isDate(l.date) || !Number.isInteger(amountPence) || amountPence <= 0 || amountPence > 1_000_000_000 || !sourceId) { out.unreadable++; continue; }
       const ownMove = l.ownMove === true;
-      const { row, ruled } = applyRules(rules, {
+      const { row: ruledRow, ruled } = applyRules(rules, {
         date: l.date, amountPence, direction: l.direction === 'in' ? 'in' : 'out', source,
         // Not the account name: renaming it between two overlapping statements mustn't double lines.
         sourceId,
@@ -888,15 +896,31 @@ const routes: [string, RegExp, Handler][] = [
         classifiedBy: ownMove ? 'rule' : null,
         meta: { account, bankType: str(l.bankType, 60), bankCategory: str(l.bankCategory, 60), importId },
       });
+      const row = settings.transfersPersonal ? sortTransfer(ruledRow, yourNamesOf(settings)) : ruledRow;
       const inserted = await r.insertTransaction(row);
       if (!inserted) { out.already++; continue; }
       out.added++;
       if (ruled) out.sortedByRules++;
       else if (ownMove) out.potMoves++;
+      else if (row !== ruledRow) out.transfersSorted++;
     }
     // Old-app records of money this statement now shows are merged into its lines.
     const doublesMerged = out.added ? await mergeCertainDoubles(r) : 0;
     return json({ ...out, doublesMerged });
+  }],
+  // Sort the bank transfers already waiting, as one batch you can undo.
+  ['POST', /^\/api\/transfers\/apply$/, async (_req, r) => {
+    const names = yourNamesOf(await r.getSettings());
+    const batchId = mkId();
+    let changed = 0;
+    for (const t of await r.listTransactions()) {
+      if (t.bucket !== 'unreviewed' || t.classifiedBy || !isBankRow(t)) continue;
+      const sorted = sortTransfer(t, names);
+      if (sorted.bucket === 'unreviewed') continue;
+      await r.updateTransaction(t.id, { bucket: sorted.bucket, classifiedBy: 'rule', meta: { autoSorted: 'transfer' } }, { batchId });
+      changed++;
+    }
+    return json({ changed, batchId: changed ? batchId : null });
   }],
   // The same money counted twice: merge the copy into the bank's line, or say they're different.
   ['POST', /^\/api\/doubles\/merge$/, async (req, r) => {
