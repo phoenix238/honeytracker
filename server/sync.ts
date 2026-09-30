@@ -2,6 +2,7 @@ import type { Repo, NewTransaction } from './repo.js';
 import { starlingTokens, listAccounts, fetchLines, type BankLine } from './starling.js';
 import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
+import { mergeCertainDoubles } from './doubles.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
 import type { Invoice, Rule, Settings, Transaction } from '../src/core/types.js';
 import { invoiceForPayment } from '../src/core/invoices.js';
@@ -16,6 +17,8 @@ export interface SyncResult {
   cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
   invoicesPaid: number;
+  /** Old-app copies of money the bank now shows, merged into the bank's line. */
+  doublesMerged: number;
   errors: string[];
 }
 
@@ -143,6 +146,8 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
   const streamId = await ensureCstlStream(repo, settings);
   const seenBookings = new Set<string>();
   const dismissed = new Set((await repo.getKv<string[]>('cstl:dismissed')) ?? []);
+  // Sessions whose cash payment you merged into a bank line (it went into the bank after all).
+  const inBank = new Set((await repo.listTransactions()).filter((t) => t.source !== 'cstl' && t.meta.cstlBookingId).map((t) => t.meta.cstlBookingId!));
   const other: { bookingId: string; date: string; amountPence: number; note: string }[] = [];
 
   for (const e of events) {
@@ -175,6 +180,7 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
 
     if (e.method === 'cash') {
       const existing = await repo.findBySource('cstl', `booking:${e.bookingId}`);
+      if (!existing && inBank.has(e.bookingId)) continue;
       if (!existing) {
         await repo.insertTransaction({
           date, amountPence: e.amountPence, direction: 'in', source: 'cstl', sourceId: `booking:${e.bookingId}`,
@@ -264,6 +270,7 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
     cstl: { configured: cstlConfigured(), matchedBank: 0, cashRows: 0, otherPaid: 0, unpricedSkipped: 0, voided: 0 },
     receiptsMatched: 0,
     invoicesPaid: 0,
+    doublesMerged: 0,
     errors: [],
   };
   try {
@@ -284,6 +291,11 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
     result.invoicesPaid = await matchInvoicePayments(repo);
   } catch (e) {
     result.errors.push(`Invoices: ${(e as Error).message}`);
+  }
+  try {
+    result.doublesMerged = await mergeCertainDoubles(repo);
+  } catch (e) {
+    result.errors.push(`Doubles: ${(e as Error).message}`);
   }
   try {
     result.receiptsMatched = await matchLooseReceipts(repo);

@@ -124,6 +124,8 @@ export const api = {
     call<{ receipt: Receipt; matchedTransactionId: string | null; readError: string; read: boolean }>('POST', '/api/receipts', r),
   updateReceipt: (id: string, patch: Partial<Receipt>) => call<Receipt>('PATCH', `/api/receipts/${id}`, patch),
   receiptsAside: (ids: string[], notNeeded: boolean) => call<{ changed: number }>('POST', '/api/receipts/aside', { ids, notNeeded }),
+  mergeDoubles: (pairs: { bankId: string; copyId: string }[]) => call<{ merged: number; errors: string[] }>('POST', '/api/doubles/merge', { pairs }),
+  keepBoth: (bankId: string, copyId: string) => call<{ ok: boolean }>('POST', '/api/doubles/keep-both', { bankId, copyId }),
   receiptToExpense: (id: string, body: { streamId: string | null; category?: string; date?: string; amountPence?: number; paidWith?: string }) =>
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),
   deleteReceipt: (id: string) => call<{ ok: true }>('DELETE', `/api/receipts/${id}`),

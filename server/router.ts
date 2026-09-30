@@ -11,6 +11,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
+import { keepBoth, mergeCertainDoubles, mergeDouble } from './doubles.js';
 import { buildWorkbook } from './workbook.js';
 import { eventsBetween, fetchCalendar } from './calendar.js';
 import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
@@ -893,11 +894,40 @@ const routes: [string, RegExp, Handler][] = [
       if (ruled) out.sortedByRules++;
       else if (ownMove) out.potMoves++;
     }
-    return json(out);
+    // Old-app records of money this statement now shows are merged into its lines.
+    const doublesMerged = out.added ? await mergeCertainDoubles(r) : 0;
+    return json({ ...out, doublesMerged });
+  }],
+  // The same money counted twice: merge the copy into the bank's line, or say they're different.
+  ['POST', /^\/api\/doubles\/merge$/, async (req, r) => {
+    const b = await body<{ pairs?: unknown }>(req);
+    const pairs = (Array.isArray(b.pairs) ? b.pairs : []).slice(0, 500) as Record<string, unknown>[];
+    if (!pairs.length) throw new HttpError(400, 'Nothing to merge');
+    let merged = 0;
+    const errors: string[] = [];
+    for (const p of pairs) {
+      try {
+        await mergeDouble(r, str(p.bankId, 64), str(p.copyId, 64));
+        merged++;
+      } catch (e) {
+        errors.push((e as Error).message);
+      }
+    }
+    return json({ merged, errors });
+  }],
+  ['POST', /^\/api\/doubles\/keep-both$/, async (req, r) => {
+    const b = await body(req);
+    try {
+      await keepBoth(r, str(b.bankId, 64), str(b.copyId, 64));
+    } catch (e) {
+      throw new HttpError(404, (e as Error).message);
+    }
+    return json({ ok: true });
   }],
   // Take back a statement import: its lines go, except any you've sorted yourself since.
   ['POST', /^\/api\/imports\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
-    const mine = (await r.listTransactions()).filter((t) => isBankRow(t) && t.source !== 'starling' && t.meta.importId === id);
+    // A line an old-app record was merged into holds that record now, so it stays too.
+    const mine = (await r.listTransactions()).filter((t) => isBankRow(t) && t.source !== 'starling' && t.meta.importId === id && !t.meta.mergedFrom);
     if (!mine.length) throw new HttpError(404, 'Nothing from that import is left to take back.');
     let removed = 0;
     for (const t of mine) {

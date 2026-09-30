@@ -916,6 +916,71 @@ describe('sorting in batches, and undo', () => {
   });
 });
 
+describe('the same money counted twice', () => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
+
+  it('merges an old-app copy into the bank line — note, receipt and stream move across — and a re-import doesn’t bring it back', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
+    const date = daysAgo(12).slice(0, 10);
+    const items = [{ sourceId: 'honeypot:entry:x1', kind: 'income', date, amountPence: 6000, label: 'Lara — session', category: null, imageDataUrl: 'data:image/png;base64,' + png }];
+    expect((await call('POST', '/api/import', { items, streamId: stream.id })).data).toMatchObject({ created: 1, linked: 0 });
+    // The bank line arrives later, 9 days on — too far to merge without asking.
+    feed.push(item('late-1', 60, 'IN', daysAgo(3), { counterPartyName: 'LARA BLIGH' }));
+    expect((await call('POST', '/api/sync', {})).data.doublesMerged).toBe(0);
+    let state = (await call('GET', '/api/state')).data;
+    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'late-1');
+    const copy = state.transactions.find((t: Transaction) => t.source === 'import');
+    const res = await call('POST', '/api/doubles/merge', { pairs: [{ bankId: bankRow.id, copyId: copy.id }] });
+    expect(res.data).toEqual({ merged: 1, errors: [] });
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions).toHaveLength(1);
+    expect(state.transactions[0]).toMatchObject({ id: bankRow.id, bucket: 'business_income', streamId: stream.id, note: 'Lara — session', meta: { importedFrom: 'honeypot:entry:x1', mergedFrom: 'import' } });
+    expect(state.receipts[0].transactionId).toBe(bankRow.id);
+    expect((await call('POST', '/api/import', { items, streamId: stream.id })).data).toMatchObject({ created: 0, already: 1 });
+  });
+
+  it('merges on its own when certain: the bank line turns up within six days, to the penny', async () => {
+    await signIn();
+    const date = daysAgo(5).slice(0, 10);
+    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:x2', kind: 'income', date, amountPence: 4200, label: 'Sam', category: null, imageDataUrl: null }], streamId: null });
+    feed.push(item('soon-1', 42, 'IN', daysAgo(3), { counterPartyName: 'SAM' }));
+    expect((await call('POST', '/api/sync', {})).data.doublesMerged).toBe(1);
+    const state = (await call('GET', '/api/state')).data;
+    expect(state.transactions.map((t: Transaction) => t.source)).toEqual(['starling']);
+  });
+
+  it('a CSTL cash session that went into the bank after all stays merged on the next sync', async () => {
+    await signIn();
+    cstlEvents.push({ bookingId: 'bx', paidAt: daysAgo(4), amountPence: 4500, method: 'cash', feedItemUid: null, paymentRef: 'AB-9', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' });
+    feed.push(item('cst-bank', 45, 'IN', daysAgo(2), { counterPartyName: 'A BROWN' }));
+    await call('POST', '/api/sync', {});
+    let state = (await call('GET', '/api/state')).data;
+    const cash = state.transactions.find((t: Transaction) => t.source === 'cstl');
+    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'cst-bank');
+    await call('POST', '/api/doubles/merge', { pairs: [{ bankId: bankRow.id, copyId: cash.id }] });
+    await call('POST', '/api/sync', {});
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions.filter((t: Transaction) => t.source === 'cstl')).toHaveLength(0);
+    expect(state.transactions.find((t: Transaction) => t.id === bankRow.id)).toMatchObject({ bucket: 'business_income', meta: { cstlBookingId: 'bx' } });
+  });
+
+  it('“two payments” keeps both, and bank lines are never merged away', async () => {
+    await signIn();
+    const date = daysAgo(11).slice(0, 10);
+    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:x3', kind: 'income', date, amountPence: 5000, label: 'Jo', category: null, imageDataUrl: null }], streamId: null });
+    feed.push(item('two-1', 50, 'IN', daysAgo(3)));
+    await call('POST', '/api/sync', {});
+    const state = (await call('GET', '/api/state')).data;
+    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'two-1');
+    const copy = state.transactions.find((t: Transaction) => t.source === 'import');
+    expect((await call('POST', '/api/doubles/merge', { pairs: [{ bankId: copy.id, copyId: bankRow.id }] })).data.merged).toBe(0);
+    await call('POST', '/api/doubles/keep-both', { bankId: bankRow.id, copyId: copy.id });
+    const after = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.id === copy.id);
+    expect(after.meta.notDoubleOf).toBe(bankRow.id);
+  });
+});
+
 describe('what you tell the AI about yourself', () => {
   it('is saved, read before every receipt, and a receipt’s stream and reason carry onto its bank line', async () => {
     await signIn();
@@ -952,7 +1017,7 @@ describe('other banks and spreadsheets', () => {
     const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
     await call('POST', '/api/rules', { field: 'counterparty', pattern: 'whr consulting', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
     const first = await call('POST', '/api/import/bank', { importId: 'import-monzo-1', account: 'Monzo', kind: 'monzo', lines });
-    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, already: 0, unreadable: 0 });
+    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, already: 0, unreadable: 0, doublesMerged: 0 });
     const again = await call('POST', '/api/import/bank', { importId: 'import-monzo-2', account: 'Monzo', kind: 'monzo', lines });
     expect(again.data).toMatchObject({ added: 0, already: 3 });
 
