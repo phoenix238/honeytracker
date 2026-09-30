@@ -6,6 +6,7 @@ import { taxYearLabel } from '../../core/dates';
 import { parsePence, formatGBP } from '../../core/money';
 import { owedSummary } from '../../core/invoices';
 import type { App } from '../useApp';
+import { StreamSheet } from './StreamSheet';
 import type { View } from '../Shell';
 
 // The one-glance answer: how much should be in the tax pot right now, what HMRC wants next
@@ -16,6 +17,9 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
   const p = app.picture!;
   const fileRef = useRef<HTMLInputElement>(null);
   const [cashOpen, setCashOpen] = useState(false);
+  /** The stream whose income and costs are open ('none' for business lines with no stream yet). */
+  const [streamOpen, setStreamOpen] = useState<string | null>(null);
+  const openSummary = streamOpen ? p.streams.find((s) => (s.streamId ?? 'none') === streamOpen) ?? null : null;
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
   const next = p.upcoming[0];
   const nextDateTotal = next ? p.upcoming.filter((x) => x.due === next.due).reduce((a, x) => a + x.amountPence, 0) : 0;
@@ -120,10 +124,13 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
         {p.streams.map((s) => {
           const st = s.streamId ? streamName.get(s.streamId) : null;
           return (
-            <Card key={s.streamId ?? 'none'} style={{ padding: 14 }}>
+            <Card key={s.streamId ?? 'none'} style={{ padding: 14 }} onClick={() => setStreamOpen(s.streamId ?? 'none')}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontWeight: 700, color: st?.color ?? T.accentBright }}>{st?.name ?? 'No stream yet'}</span>
-                <Money pence={s.profitPence} color={s.profitPence >= 0 ? T.green : T.danger} />
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Money pence={s.profitPence} color={s.profitPence >= 0 ? T.green : T.danger} />
+                  <span style={{ color: T.textFaint, fontSize: 18 }} aria-hidden>›</span>
+                </span>
               </div>
               <div style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>
                 In {(s.turnoverPence / 100).toLocaleString('en-GB', { style: 'currency', currency: 'GBP' })} · costs{' '}
@@ -133,6 +140,7 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
           );
         })}
       </Section>
+      {openSummary && <StreamSheet app={app} summary={openSummary} taxYear={p.taxYear} onClose={() => setStreamOpen(null)} />}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <Stat label="Profit so far" pence={p.trading.profitPence} color={T.text} sub={p.trading.usesTradingAllowance ? 'Using the £1,000 trading allowance' : 'After allowable costs'} />
