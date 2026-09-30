@@ -86,7 +86,7 @@ export function isEditFile(rows: string[][]): boolean {
   return Boolean(rows[0]?.some((h) => headerKey(h).startsWith('honeyid')));
 }
 
-function categoryFrom(v: string): ExpenseCategory | null | 'bad' {
+export function categoryFrom(v: string): ExpenseCategory | null | 'bad' {
   const s = cleanText(v).toLowerCase();
   if (!s) return null;
   if (isCategory(cleanText(v))) return cleanText(v) as ExpenseCategory;

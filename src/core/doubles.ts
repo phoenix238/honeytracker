@@ -76,9 +76,10 @@ export function findDoubles(txns: readonly Transaction[]): Double[] {
     edges.push({ kind, bank: b, copy: c, days, exact: b.amountPence === c.amountPence, sameName: shareWord(w(b), w(c)), alone: false });
   };
 
-  // Copies: anything that isn't the bank's record, counted as business.
+  // Copies: anything that isn't the bank's record, counted as business. Your spreadsheet's rows
+  // are your record too, so they're never anybody's copy.
   for (const c of txns) {
-    if (isBankRow(c) || !counts(c)) continue;
+    if (isBankRow(c) || c.source === 'sheet' || !counts(c)) continue;
     const notThese = new Set((c.meta.notDoubleOf ?? '').split(',').filter(Boolean));
     const window = c.source === 'import' ? WINDOW_DAYS.import : WINDOW_DAYS.other;
     for (const d of [-1, 0, 1]) {

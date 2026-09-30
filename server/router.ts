@@ -11,6 +11,7 @@ import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
+import { booksFrom, buildFreshTemplate, freshStatus, previewFresh, startFresh, undoFresh } from './fresh.js';
 import { IMPORT_REMOVED, STATEMENT_REMOVED, keepAsCash, keepBoth, mergeCertainDoubles, mergeDouble, removeOldRecords } from './doubles.js';
 import { sortTransfer } from '../src/core/transfers.js';
 import { mkId } from '../src/core/id.js';
@@ -240,9 +241,9 @@ async function state(r: Repo) {
     r.peekInvoiceCounter(),
     r.databaseBytes().catch(() => 0),
   ]);
-  const [googleOn, google] = await Promise.all([googleConnected(r), r.googleSummary()]);
+  const [googleOn, google, fresh] = await Promise.all([googleConnected(r), r.googleSummary(), freshStatus(r)]);
   return {
-    transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], invoices, invoiceCounter,
+    transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], invoices, invoiceCounter, fresh,
     storage: { usedBytes: dbBytes, limitBytes: storageLimitBytes() },
     google: { connected: googleOn, ...google },
     config: config(), today: today(),
@@ -801,6 +802,7 @@ const routes: [string, RegExp, Handler][] = [
 
   // ── Import from the old apps ──────────────────────────────────────────────────────
   ['POST', /^\/api\/import$/, async (req, r) => {
+    if (await booksFrom(r)) throw new HttpError(400, 'You started fresh from your spreadsheet — the old app’s records aren’t brought in any more.');
     const b = await body<{ items?: ImportedItem[]; streamId?: string | null }>(req);
     const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
     const streamId = b.streamId ? str(b.streamId, 64) : null;
@@ -888,15 +890,17 @@ const routes: [string, RegExp, Handler][] = [
     const account = str(b.account, 60).trim() || 'Other bank';
     const source = b.kind === 'monzo' ? 'monzo' : 'bankcsv';
     const lines = Array.isArray(b.lines) ? (b.lines as Record<string, unknown>[]).slice(0, 1000) : [];
-    const [rules, settings, removedLines] = await Promise.all([r.listRules(), r.getSettings(), r.getKv<string[]>(STATEMENT_REMOVED)]);
+    const [rules, settings, removedLines, cutoff] = await Promise.all([r.listRules(), r.getSettings(), r.getKv<string[]>(STATEMENT_REMOVED), booksFrom(r)]);
     const removed = new Set(removedLines ?? []);
-    const out = { added: 0, sortedByRules: 0, potMoves: 0, transfersSorted: 0, already: 0, unreadable: 0 };
+    const out = { added: 0, sortedByRules: 0, potMoves: 0, transfersSorted: 0, already: 0, unreadable: 0, beforeYourSheet: 0 };
     for (const l of lines) {
       const amountPence = Number(l.amountPence);
       const sourceId = str(l.sourceId, 200);
       if (!isDate(l.date) || !Number.isInteger(amountPence) || amountPence <= 0 || amountPence > 1_000_000_000 || !sourceId) { out.unreadable++; continue; }
       // A line merged into the live Starling feed's copy of the same payment isn't brought back.
       if (removed.has(`${source}:${sourceId}`)) { out.already++; continue; }
+      // Your spreadsheet is the record up to its last date.
+      if (cutoff && l.date <= cutoff) { out.beforeYourSheet++; continue; }
       const ownMove = l.ownMove === true;
       const { row: ruledRow, ruled } = applyRules(rules, {
         date: l.date, amountPence, direction: l.direction === 'in' ? 'in' : 'out', source,
@@ -949,6 +953,43 @@ const routes: [string, RegExp, Handler][] = [
       }
     }
     return json({ merged, errors });
+  }],
+  // ── Starting fresh from your own spreadsheet ────────────────────────────────────────
+  ['GET', /^\/api\/fresh\/template\.xlsx$/, async (_req, r, _p, url) => {
+    const prefill = url.searchParams.get('prefill') !== '0';
+    const [txns, streams] = await Promise.all([r.listTransactions(), r.listStreams()]);
+    const bytes = await buildFreshTemplate(txns, streams, prefill);
+    return new Response(new Uint8Array(bytes), {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="honey-${prefill ? 'my-payments' : 'blank'}-${today()}.xlsx"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }],
+  ['POST', /^\/api\/fresh\/(preview|apply)$/, async (req, r, [step]) => {
+    const b = await body<{ dataBase64?: unknown; cutoff?: unknown }>(req);
+    const data = str(b.dataBase64, 12_000_000);
+    if (!data) throw new HttpError(400, 'Choose your spreadsheet first');
+    let preview;
+    try {
+      preview = await previewFresh(r, data, today());
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
+    // The preview carries a few rows as they were read, not all of them back again.
+    if (step === 'preview') return json({ read: { count: preview.read.rows.length, sample: preview.read.rows.slice(0, 4), problems: preview.read.problems.slice(0, 200), columns: preview.read.columns }, plan: preview.plan });
+    if (!preview.plan) throw new HttpError(400, 'The spreadsheet has no payments Honey could read.');
+    // The file you saw the preview of — not a different one chosen since.
+    if (str(b.cutoff, 10) !== preview.plan.cutoff || !isDate(b.cutoff)) throw new HttpError(409, 'The spreadsheet changed since the preview — look at it again first.');
+    return json(await startFresh(r, preview.read.rows, today()));
+  }],
+  ['POST', /^\/api\/fresh\/undo$/, async (_req, r) => {
+    try {
+      return json(await undoFresh(r));
+    } catch (e) {
+      throw new HttpError(400, (e as Error).message);
+    }
   }],
   // Old-app records the bank doesn't back up: remove them, or keep them as cash income.
   ['POST', /^\/api\/old-records\/(remove|keep-cash)$/, async (req, r, [action]) => {

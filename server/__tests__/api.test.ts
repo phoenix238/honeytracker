@@ -916,6 +916,102 @@ describe('sorting in batches, and undo', () => {
   });
 });
 
+describe('starting fresh from your own spreadsheet', () => {
+  async function download(prefill = true): Promise<Buffer> {
+    const res = await handle(new Request(`${BASE}/api/fresh/template.xlsx${prefill ? '' : '?prefill=0'}`, { headers: { cookie } }));
+    expect(res.headers.get('content-type')).toContain('spreadsheetml');
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  it('gives you the spreadsheet: your bank lines in, the old app left out, dropdowns and instructions', async () => {
+    await signIn();
+    await call('POST', '/api/streams', { name: 'Coffee' });
+    feed.push(item('fs-1', 45.5, 'OUT', daysAgo(20), { counterPartyName: 'SHELL 334', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:fs', kind: 'income', date: daysAgo(40).slice(0, 10), amountPence: 999, label: 'Old thing', category: null, imageDataUrl: null }], streamId: null });
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await download()) as unknown as ExcelJS.Buffer);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(['How to fill it in', 'Payments', 'Lists']);
+    const ws = wb.getWorksheet('Payments')!;
+    expect(ws.getRow(1).values).toEqual([undefined, 'Date', 'In/Out', 'Amount £', 'Who', 'Reference', 'What is it?', 'Stream', 'Category', 'Work %', 'Note', 'Account']);
+    expect(ws.actualRowCount).toBe(2); // the Shell line; not the old app's record
+    expect(ws.getRow(2).getCell(4).value).toBe('SHELL 334');
+    expect(ws.getRow(2).getCell(6).value).toBe('Not sure yet');
+    expect(wb.getWorksheet('Lists')!.getColumn(3).values).toContain('Coffee');
+    const blank = new ExcelJS.Workbook();
+    await blank.xlsx.load((await download(false)) as unknown as ExcelJS.Buffer);
+    expect(blank.getWorksheet('Payments')!.actualRowCount).toBe(1);
+  });
+
+  it('reads it back, shows what it would do, replaces — and the bank feed only fills in after it; undo puts everything back', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Coffee' })).data;
+    feed.push(item('fs-a', 45.5, 'OUT', daysAgo(20), { counterPartyName: 'SHELL 334', source: 'MASTER_CARD' }));
+    feed.push(item('fs-b', 162, 'IN', daysAgo(15), { counterPartyName: 'ETHICAL CAFF', source: 'FASTER_PAYMENTS_IN' }));
+    await call('POST', '/api/sync', {});
+    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:dup', kind: 'income', date: daysAgo(14).slice(0, 10), amountPence: 9900, label: 'Caff', category: null, imageDataUrl: null }], streamId: null });
+    const before: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+
+    // Fill it in on the laptop: sort both lines, add a cash payment.
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await download()) as unknown as ExcelJS.Buffer);
+    const ws = wb.getWorksheet('Payments')!;
+    const rowFor = (who: string) => [2, 3].map((i) => ws.getRow(i)).find((r) => r.getCell(4).value === who)!;
+    rowFor('SHELL 334').getCell(6).value = 'Business cost';
+    rowFor('SHELL 334').getCell(7).value = 'Coffee';
+    rowFor('SHELL 334').getCell(8).value = 'Car, van & travel';
+    rowFor('SHELL 334').getCell(10).value = 'Fuel to shifts';
+    rowFor('ETHICAL CAFF').getCell(6).value = 'Business income';
+    rowFor('ETHICAL CAFF').getCell(7).value = 'Coffee';
+    const cashDate = new Date(Date.now() - 12 * 86_400_000);
+    ws.addRow([new Date(Date.UTC(cashDate.getUTCFullYear(), cashDate.getUTCMonth(), cashDate.getUTCDate())), 'In', 60, 'Cash client', '', 'Business income', 'Media work', '', null, '', 'Cash']);
+    const dataBase64 = Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+
+    const preview = (await call('POST', '/api/fresh/preview', { dataBase64 })).data;
+    expect(preview.read.problems).toEqual([]);
+    expect(preview.plan).toMatchObject({ count: 3, newStreams: ['Media work'] });
+    expect(preview.plan.removing).toMatchObject({ bank: 2, oldApp: 1 });
+    expect((await call('GET', '/api/state')).data.transactions).toHaveLength(before.length); // a preview changes nothing
+
+    expect((await call('POST', '/api/fresh/apply', { dataBase64, cutoff: '2000-01-01' })).status).toBe(409);
+    const done = (await call('POST', '/api/fresh/apply', { dataBase64, cutoff: preview.plan.cutoff })).data;
+    expect(done).toMatchObject({ inserted: 3, removed: 3, cutoff: preview.plan.cutoff, streamsMade: ['Media work'] });
+    let state = (await call('GET', '/api/state')).data;
+    expect(state.fresh).toMatchObject({ cutoff: preview.plan.cutoff, canUndo: true });
+    expect(state.transactions.map((t: Transaction) => t.source)).toEqual(['sheet', 'sheet', 'sheet']);
+    const shell = state.transactions.find((t: Transaction) => t.counterparty === 'SHELL 334');
+    expect(shell).toMatchObject({ bucket: 'business_expense', category: 'carVanTravelExpenses', streamId: stream.id, note: 'Fuel to shifts', classifiedBy: 'user' });
+
+    // The feed reads its whole window again: what's in the sheet isn't added twice; what's newer is.
+    feed.push(item('fs-c', 12, 'OUT', daysAgo(1), { counterPartyName: 'BOOTS', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions.map((t: Transaction) => t.sourceId).filter((x: string) => x?.startsWith('fs-'))).toEqual(['fs-c']);
+    expect((await call('POST', '/api/import', { items: [], streamId: null })).status).toBe(400); // the old app is done
+    expect(state.transactions.some((t: Transaction) => t.source === 'import')).toBe(false);
+
+    const undone = (await call('POST', '/api/fresh/undo', {})).data;
+    expect(undone).toEqual({ restored: 3, removed: 3 });
+    state = (await call('GET', '/api/state')).data;
+    expect(state.fresh).toBeNull();
+    expect(state.transactions.map((t: Transaction) => t.id).sort()).toEqual([...before.map((t) => t.id), state.transactions.find((t: Transaction) => t.sourceId === 'fs-c').id].sort());
+  });
+
+  it('says what it can’t read, and refuses a file that isn’t a spreadsheet', async () => {
+    await signIn();
+    const csv = 'Date,Amount,What is it?\n2025-10-01,60,Business income\nsometime,5,Personal\n';
+    const preview = (await call('POST', '/api/fresh/preview', { dataBase64: Buffer.from(csv).toString('base64') })).data;
+    expect(preview.plan.count).toBe(1);
+    expect(preview.read.problems[0]).toMatchObject({ line: 3, skipped: true });
+    const notXlsx = Buffer.concat([Buffer.from('PK'), Buffer.from('not really a zip')]).toString('base64');
+    const bad = await call('POST', '/api/fresh/preview', { dataBase64: notXlsx });
+    expect(bad.status).toBe(400);
+    expect(bad.data.error).toMatch(/Excel/);
+  });
+});
+
 describe('bank transfers', () => {
   it('sorts transfers you send and your own money moving; leaves client payments; rules come first', async () => {
     await signIn();
@@ -1114,7 +1210,7 @@ describe('other banks and spreadsheets', () => {
     const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
     await call('POST', '/api/rules', { field: 'counterparty', pattern: 'whr consulting', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
     const first = await call('POST', '/api/import/bank', { importId: 'import-monzo-1', account: 'Monzo', kind: 'monzo', lines });
-    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, transfersSorted: 0, already: 0, unreadable: 0, doublesMerged: 0 });
+    expect(first.data).toEqual({ added: 3, sortedByRules: 1, potMoves: 1, transfersSorted: 0, already: 0, unreadable: 0, beforeYourSheet: 0, doublesMerged: 0 });
     const again = await call('POST', '/api/import/bank', { importId: 'import-monzo-2', account: 'Monzo', kind: 'monzo', lines });
     expect(again.data).toMatchObject({ added: 0, already: 3 });
 

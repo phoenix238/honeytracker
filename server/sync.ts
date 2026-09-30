@@ -4,6 +4,7 @@ import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { sortTransfer } from '../src/core/transfers.js';
 import { mergeCertainDoubles } from './doubles.js';
+import { booksFrom } from './fresh.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
 import type { Invoice, Rule, Settings, Transaction } from '../src/core/types.js';
 import { invoiceForPayment } from '../src/core/invoices.js';
@@ -54,7 +55,7 @@ export async function syncStarling(repo: Repo, result: SyncResult, fetchImpl: ty
   const tokens = starlingTokens();
   result.starling.configured = tokens.length > 0;
   if (!tokens.length) return;
-  const [rules, settings] = await Promise.all([repo.listRules(), repo.getSettings()]);
+  const [rules, settings, cutoff] = await Promise.all([repo.listRules(), repo.getSettings(), booksFrom(repo)]);
   const names = [settings.profile.name || settings.name, settings.profile.businessName].filter(Boolean);
   const since = syncWindowStart(londonDate(new Date()));
   // Overlap the watermark by 3 days: a transaction can settle after later ones.
@@ -68,6 +69,8 @@ export async function syncStarling(repo: Repo, result: SyncResult, fetchImpl: ty
       const startedAt = new Date();
       const lines = await fetchLines(token, account, from, startedAt, fetchImpl);
       for (const line of lines) {
+        // Your spreadsheet is the record up to its last date; the feed only fills in after it.
+        if (cutoff && line.date <= cutoff) continue;
         let row = bankLineToRow(line);
         const rule = row.bucket === 'unreviewed' ? findRule(rules, row) : null;
         if (rule) row = stripIds(applyRule(rule, withIds(row)));
@@ -150,6 +153,7 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
   const streamId = await ensureCstlStream(repo, settings);
   const seenBookings = new Set<string>();
   const dismissed = new Set((await repo.getKv<string[]>('cstl:dismissed')) ?? []);
+  const cutoff = await booksFrom(repo);
   // Sessions whose cash payment you merged into a bank line (it went into the bank after all).
   const inBank = new Set((await repo.listTransactions()).filter((t) => t.source !== 'cstl' && t.meta.cstlBookingId).map((t) => t.meta.cstlBookingId!));
   const other: { bookingId: string; date: string; amountPence: number; note: string }[] = [];
@@ -162,6 +166,8 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
     }
     const meta = { cstlBookingId: e.bookingId, cstlRef: e.paymentRef, cstlReceipt: e.receiptNumber, clinic: e.clinic };
     const date = londonDate(e.paidAt);
+    // Up to your spreadsheet's last date, the spreadsheet already has it.
+    if (cutoff && date <= cutoff) continue;
 
     // A bank payment CSTL recorded by hand (not matched from the feed): the bank row is in the
     // ledger already and is classified there, so there's nothing to add here.

@@ -1,6 +1,7 @@
 import type { Invoice, Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
 import type { ImportedItem } from '../core/importers';
 import type { StatementLine } from '../core/bankCsv';
+import type { FreshPlan, FreshProblem, FreshRow } from '../core/freshSheet';
 
 // The app's only door to the server. Every call either returns data or throws an ApiError
 // carrying the server's own message — nothing fails silently.
@@ -59,6 +60,8 @@ export interface AppState {
   google: { connected: boolean; checked: number; found: number; matched: number; lastAt: string | null };
   config: { starling: boolean; cstl: boolean; receiptsAi: boolean; aiSort: boolean; cron: boolean };
   today: string;
+  /** Set once you've started fresh from your spreadsheet: it's the record up to `cutoff`. */
+  fresh: { cutoff: string; at: string; canUndo: boolean } | null;
 }
 
 /** One event from your calendar, in UK time. */
@@ -127,6 +130,9 @@ export const api = {
   mergeDoubles: (pairs: { bankId: string; copyId: string }[]) => call<{ merged: number; errors: string[] }>('POST', '/api/doubles/merge', { pairs }),
   keepBoth: (bankId: string, copyId: string) => call<{ ok: boolean }>('POST', '/api/doubles/keep-both', { bankId, copyId }),
   oldRecords: (action: 'remove' | 'keep-cash', ids: string[]) => call<{ changed: number }>('POST', `/api/old-records/${action}`, { ids }),
+  freshPreview: (dataBase64: string) => call<FreshPreview>('POST', '/api/fresh/preview', { dataBase64 }),
+  freshApply: (dataBase64: string, cutoff: string) => call<{ inserted: number; removed: number; cutoff: string; streamsMade: string[] }>('POST', '/api/fresh/apply', { dataBase64, cutoff }),
+  freshUndo: () => call<{ restored: number; removed: number }>('POST', '/api/fresh/undo', {}),
   applyTransfers: () => call<{ changed: number; batchId: string | null }>('POST', '/api/transfers/apply', {}),
   receiptToExpense: (id: string, body: { streamId: string | null; category?: string; date?: string; amountPence?: number; paidWith?: string }) =>
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),
@@ -158,6 +164,12 @@ export const api = {
 };
 
 export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;
+export const freshTemplateUrl = (prefill: boolean) => `/api/fresh/template.xlsx${prefill ? '' : '?prefill=0'}`;
+
+export interface FreshPreview {
+  read: { count: number; sample: FreshRow[]; problems: FreshProblem[]; columns: string[] };
+  plan: FreshPlan | null;
+}
 export const invoicePdfUrl = (id: string, download = false) => `/api/invoices/${id}/pdf${download ? '?download=1' : ''}`;
 export const exportCsvUrl = (year: number) => `/api/export.csv?year=${year}`;
 export const exportEditUrl = (year: number | 'all') => `/api/export-edit.csv?year=${year}`;

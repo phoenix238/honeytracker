@@ -191,6 +191,27 @@ export function repo(db: Db) {
       return opts.existing ? { ...next, updatedAt: at } : api.getTransaction(id);
     },
 
+    /**
+     * Many rows written at once, with the ids, times and history they had — for starting fresh
+     * from a spreadsheet and undoing it, where one query per row would be far too slow.
+     */
+    async insertMany(rows: readonly Transaction[]): Promise<void> {
+      for (let i = 0; i < rows.length; i += 200) {
+        const chunk = rows.slice(i, i + 200);
+        const params: unknown[] = [];
+        const values = chunk.map((t, j) => {
+          params.push(t.id, t.date, t.amountPence, t.direction, t.source, t.sourceId, t.counterparty, t.reference, t.bucket, t.streamId,
+            t.category, t.businessPercent, t.note, t.classifiedBy, JSON.stringify(t.meta ?? {}), t.createdAt, t.updatedAt);
+          const b = j * 17;
+          return `(${Array.from({ length: 17 }, (_, k) => `$${b + k + 1}${k === 14 ? '::jsonb' : ''}`).join(',')})`;
+        });
+        await db.query(`INSERT INTO transactions (${TXN_COLS}) VALUES ${values.join(',')} ON CONFLICT (id) DO NOTHING`, params);
+      }
+    },
+    async deleteMany(ids: readonly string[]): Promise<void> {
+      for (let i = 0; i < ids.length; i += 500) await db.query('DELETE FROM transactions WHERE id = ANY($1::text[])', [ids.slice(i, i + 500)]);
+    },
+
     async deleteTransaction(id: string): Promise<void> {
       await db.query('DELETE FROM transactions WHERE id = $1', [id]);
       await api.audit(id, 'delete', {});

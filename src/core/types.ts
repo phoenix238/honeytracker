@@ -21,7 +21,8 @@ export type Direction = 'in' | 'out';
 export type Bucket = 'unreviewed' | 'business_income' | 'business_expense' | 'personal' | 'transfer';
 
 /** Where a row came from. `sourceId` is that source's own unique id — the idempotency key. */
-export type Source = 'starling' | 'monzo' | 'bankcsv' | 'cash' | 'manual' | 'cstl' | 'import';
+/** `sheet`: brought in from your own spreadsheet when you started fresh — the record up to its last date. */
+export type Source = 'starling' | 'monzo' | 'bankcsv' | 'cash' | 'manual' | 'cstl' | 'import' | 'sheet';
 
 /** Rows that are the bank's record: never deleted, never rewritten, only classified. */
 export const BANK_SOURCES: readonly Source[] = ['starling', 'monzo', 'bankcsv'];

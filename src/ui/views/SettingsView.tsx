@@ -10,6 +10,7 @@ import { transferKind } from '../../core/transfers';
 import type { App } from '../useApp';
 import { GoogleSection } from './GoogleSection';
 import { SpreadsheetSection } from './SpreadsheetSection';
+import { FreshSection } from './FreshSection';
 
 const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'];
 
@@ -47,9 +48,10 @@ export function SettingsView({ app }: { app: App }) {
       </Group>
 
       <Group title="Files & exports">
+        <FreshSection app={app} />
         <SpreadsheetSection app={app} />
         <StorageSection app={app} />
-        <ImportSection app={app} />
+        {!data.fresh && <ImportSection app={app} />}
       </Group>
 
       <Button tone="danger" onClick={app.signOut}>Sign out</Button>
