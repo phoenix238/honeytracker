@@ -435,14 +435,20 @@ const routes: [string, RegExp, Handler][] = [
   ['POST', /^\/api\/rules$/, async (req, r) => {
     const b = await body(req);
     const rule = await r.insertRule(ruleFrom(b));
-    // Apply to everything already waiting in the inbox, too.
+    // Apply to everything already waiting in the inbox, too — and to lines only the bank-transfers
+    // setting sorted (a standing order for studio rent it took as personal): your rule knows better.
+    // Anything you decided yourself stays as you left it.
     let applied = 0;
     if (b.applyToExisting !== false) {
       const rules = await r.listRules();
       for (const t of await r.listTransactions()) {
-        if (t.bucket !== 'unreviewed' || findRule(rules, t)?.id !== rule.id) continue;
-        const next = applyRule(rule, t);
-        await r.updateTransaction(t.id, { bucket: next.bucket, streamId: next.streamId, category: next.category, businessPercent: next.businessPercent, classifiedBy: 'rule' });
+        const byTransferSetting = t.meta.autoSorted === 'transfer' && t.classifiedBy === 'rule';
+        if ((t.bucket !== 'unreviewed' && !byTransferSetting) || findRule(rules, t)?.id !== rule.id) continue;
+        const next = applyRule(rule, { ...t, bucket: 'unreviewed' });
+        await r.updateTransaction(t.id, {
+          bucket: next.bucket, streamId: next.streamId, category: next.category, businessPercent: next.businessPercent, classifiedBy: 'rule',
+          ...(byTransferSetting ? { meta: { autoSorted: '' } } : {}),
+        });
         applied++;
       }
     }

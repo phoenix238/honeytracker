@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findRule, applyRule, suggestPattern } from '../rules.js';
+import { findRule, applyRule, suggestPattern, fieldFor } from '../rules.js';
 import type { Rule } from '../types.js';
 import { txn } from './fixtures.js';
 
@@ -39,5 +39,15 @@ describe('rules', () => {
   });
   it('suggests a pattern without store numbers', () => {
     expect(suggestPattern({ counterparty: 'TESCO STORES 3021', reference: '' })).toEqual({ field: 'counterparty', pattern: 'tesco stores' });
+  });
+});
+
+describe('where a typed pattern is looked for', () => {
+  it('looks in the reference when that is where the words are, the payee otherwise', () => {
+    const rent = { counterparty: 'AMY ROSE', reference: 'STUDIO RENT' };
+    expect(fieldFor(rent, 'studio rent')).toBe('reference');
+    expect(fieldFor(rent, 'amy rose')).toBe('counterparty');
+    expect(fieldFor(rent, 'nothing here')).toBe('counterparty');
+    expect(fieldFor({ counterparty: '', reference: 'INV 42' }, 'inv')).toBe('reference');
   });
 });

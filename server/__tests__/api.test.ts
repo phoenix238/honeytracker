@@ -936,6 +936,32 @@ describe('bank transfers', () => {
     expect(by('tr-studio')).toMatchObject({ bucket: 'business_expense', category: 'premisesRunningCosts' });
   });
 
+  it('a rule for a standing order that is a business cost (studio rent) re-sorts the ones the setting took as personal', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Craniosacral therapy' })).data;
+    feed.push(item('amy-1', 350, 'OUT', daysAgo(40), { counterPartyName: 'AMY ROSE', reference: 'STUDIO RENT', source: 'STANDING_ORDER' }));
+    feed.push(item('amy-2', 350, 'OUT', daysAgo(10), { counterPartyName: 'AMY ROSE', reference: 'STUDIO RENT', source: 'STANDING_ORDER' }));
+    feed.push(item('amy-3', 20, 'OUT', daysAgo(9), { counterPartyName: 'AMY ROSE', reference: 'Drinks', source: 'FASTER_PAYMENTS_OUT' }));
+    await call('POST', '/api/sync', {});
+    let rows: Transaction[] = (await call('GET', '/api/state')).data.transactions;
+    expect(rows.filter((t) => t.counterparty === 'AMY ROSE').map((t) => t.bucket)).toEqual(['personal', 'personal', 'personal']);
+    // You decide the drinks yourself; then make a rule for the rent.
+    const drinks = rows.find((t) => t.sourceId === 'amy-3')!;
+    await call('PATCH', `/api/transactions/${drinks.id}`, { bucket: 'personal' });
+    const made = await call('POST', '/api/rules', { field: 'reference', pattern: 'studio rent', direction: 'out', bucket: 'business_expense', streamId: stream.id, category: 'premisesRunningCosts' });
+    expect(made.data.applied).toBe(2);
+    rows = (await call('GET', '/api/state')).data.transactions;
+    const by = (uid: string) => rows.find((t) => t.sourceId === uid)!;
+    expect(by('amy-1')).toMatchObject({ bucket: 'business_expense', category: 'premisesRunningCosts', streamId: stream.id, meta: { autoSorted: '' } });
+    expect(by('amy-2').bucket).toBe('business_expense');
+    expect(by('amy-3')).toMatchObject({ bucket: 'personal', classifiedBy: 'user' });
+    // And next month's arrives sorted.
+    feed.push(item('amy-4', 350, 'OUT', daysAgo(1), { counterPartyName: 'AMY ROSE', reference: 'STUDIO RENT', source: 'STANDING_ORDER' }));
+    await call('POST', '/api/sync', {});
+    const next = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.sourceId === 'amy-4');
+    expect(next).toMatchObject({ bucket: 'business_expense', category: 'premisesRunningCosts' });
+  });
+
   it('switched off, leaves them to you — and sorting the waiting ones later can be undone', async () => {
     await signIn();
     await call('PUT', '/api/settings', { transfersPersonal: false });

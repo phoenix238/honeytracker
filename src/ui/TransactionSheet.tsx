@@ -3,7 +3,7 @@ import type { Bucket, ExpenseCategory, Receipt, Transaction } from '../core/type
 import { CATEGORIES } from '../core/hmrc';
 import { looseReceiptsFor, receiptOrigin } from '../core/receiptMatch';
 import { formatGBP } from '../core/money';
-import { suggestPattern } from '../core/rules';
+import { fieldFor, suggestPattern } from '../core/rules';
 import { T, fonts } from './theme';
 import { BUCKET_COLOR, BUCKET_LABEL, Button, Chip, Field, Label, Money, Sheet, fmtDate, inputStyle } from './components';
 import { api } from './api';
@@ -92,9 +92,8 @@ export function TransactionSheet({
       }
     }
     if (always && bucket !== 'unreviewed' && pattern.trim().length >= 2) {
-      const { field } = suggestPattern(txn);
       await app.addRule({
-        field,
+        field: fieldFor(txn, pattern),
         pattern: pattern.trim(),
         direction: txn.direction,
         bucket,

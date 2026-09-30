@@ -51,3 +51,13 @@ export function suggestPattern(t: Pick<Transaction, 'counterparty' | 'reference'
     .trim();
   return { field: t.counterparty ? 'counterparty' : 'reference', pattern: cleaned || base.trim() };
 }
+
+/**
+ * Which of the bank's two fields a pattern you typed is in — the payee ("amy rose") or the
+ * reference ("studio rent") — so a rule looks where the words actually are. The payee wins a tie.
+ */
+export function fieldFor(t: Pick<Transaction, 'counterparty' | 'reference'>, pattern: string): Rule['field'] {
+  const p = pattern.trim().toLowerCase();
+  if (p && !t.counterparty.toLowerCase().includes(p) && t.reference.toLowerCase().includes(p)) return 'reference';
+  return suggestPattern(t).field;
+}
