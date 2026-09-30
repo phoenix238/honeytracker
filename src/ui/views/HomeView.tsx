@@ -22,6 +22,8 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
   const openSummary = streamOpen ? p.streams.find((s) => (s.streamId ?? 'none') === streamOpen) ?? null : null;
   const streamName = new Map(data.streams.map((s) => [s.id, s]));
   const owed = owedSummary(data.invoices, data.today);
+  /** All business income this tax year, before costs — every stream together. */
+  const earnedPence = p.streams.reduce((a, s) => a + s.turnoverPence, 0);
   const storageUsed = data.storage.limitBytes ? data.storage.usedBytes / data.storage.limitBytes : 0;
 
   return (
@@ -29,11 +31,22 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
       <Title right={<span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.textMuted }}>Tax year {taxYearLabel(p.taxYear)}</span>}>Honey</Title>
 
       <Card style={{ background: T.accent + '14', borderColor: T.accent + '55' }}>
-        <Label color={T.accent}>Your tax pot should hold</Label>
-        <div style={{ marginTop: 6 }}>
-          <Money pence={p.potTargetPence} color={T.accentBright} size={34} />
+        {/* What you've earned is the headline; what to keep for tax sits beside it. Wraps under on a narrow phone. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', columnGap: 14, rowGap: 10 }}>
+          <div style={{ flex: '1 1 auto' }}>
+            <Label>Earned in {taxYearLabel(p.taxYear)}</Label>
+            <div style={{ marginTop: 6 }}>
+              <Money pence={earnedPence} color={T.text} size={30} />
+            </div>
+          </div>
+          <div style={{ flex: '0 0 auto', borderLeft: `2px solid ${T.accent}66`, paddingLeft: 12 }}>
+            <Label color={T.accent}>Tax pot</Label>
+            <div style={{ marginTop: 6 }}>
+              <Money pence={p.potTargetPence} color={T.accentBright} size={20} />
+            </div>
+          </div>
         </div>
-        <div style={{ fontSize: 13, color: T.text, marginTop: 8, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 13, color: T.text, marginTop: 10, lineHeight: 1.5 }}>
           Put aside <strong>{p.setAside.percent}%</strong> of every business payment{p.setAside.fixed ? '' : ' from now on'}.
         </div>
         {p.setAside.fixed && (
@@ -127,7 +140,7 @@ export function HomeView({ app, go, sort, toSort }: { app: App; go: (v: View) =>
       </Section>
       {openSummary && <StreamSheet app={app} summary={openSummary} taxYear={p.taxYear} onClose={() => setStreamOpen(null)} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
         <Stat label="Profit so far" pence={p.trading.profitPence} color={T.text} sub={p.trading.usesTradingAllowance ? 'Using the £1,000 trading allowance' : 'After allowable costs'} />
         <Stat label="Year projected" pence={p.estimate.projectedProfitPence} color={T.textMuted} sub={p.estimate.projectionBasis === 'expected' ? 'Your own estimate' : 'Scaled up from so far'} />
       </div>
