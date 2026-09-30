@@ -8,6 +8,9 @@ import type { ExpenseCategory, IsoDate, Pence } from '../src/core/types.js';
 // Reads a receipt photo or PDF with Claude and pulls out what the ledger needs: who, when,
 // how much, the VAT, and a suggested HMRC category. The file is kept whatever happens — a
 // failed read just means you type the three fields yourself.
+//
+// Cheapest first: Claude Haiku reads every receipt, and only one whose answer doesn't add up
+// (no total, an impossible date, VAT bigger than the bill) is read again by Claude Sonnet.
 
 export interface ExtractedReceipt {
   merchant: string;
@@ -58,24 +61,70 @@ function fileBlock(mime: string, dataBase64: string): Anthropic.Beta.BetaContent
 export async function extractReceipt(mime: string, dataBase64: string, client = anthropicClient()): Promise<ExtractedReceipt | null> {
   const file = fileBlock(mime, dataBase64);
   if (!file) return null;
-  const out = await ask(client, [file, { type: 'text', text: PROMPT }], SCHEMA);
+  const out = await ask(client, [file, { type: 'text', text: PROMPT }], SCHEMA, (o) => doubtAbout(o) !== '', true);
   return out ? tidy(out) : null;
 }
 
 type Raw = { merchant: string; date: string; total: string; vat: string; currency: string; category: string; description: string };
 
-async function ask<S extends Record<string, unknown>>(client: Anthropic, content: Anthropic.Beta.BetaContentBlockParam[], schema: S) {
+/** The quick, cheap reader, and the one that re-reads what it got wrong. Either can be swapped in Vercel. */
+export const READER = () => process.env.RECEIPT_MODEL?.trim() || 'claude-haiku-4-5';
+export const CHECKER = () => process.env.RECEIPT_CHECK_MODEL?.trim() || 'claude-sonnet-5-5';
+
+async function askOnce<S extends Record<string, unknown>>(client: Anthropic, model: string, content: Anthropic.Beta.BetaContentBlockParam[], schema: S) {
+  const format = betaJSONSchemaOutputFormat(schema as never);
+  // Haiku has no effort setting or refusal fallback; the newer models get both, at the lowest effort.
+  const extras = model.startsWith('claude-haiku')
+    ? { output_config: { format } }
+    : { output_config: { effort: 'low' as const, format }, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const };
   const response = await client.beta.messages.parse({
-    model: process.env.RECEIPT_MODEL?.trim() || 'claude-opus-5',
+    model,
     max_tokens: 4000,
-    // A receipt is a quick read; low effort keeps each one cheap.
-    output_config: { effort: 'low', format: betaJSONSchemaOutputFormat(schema as never) },
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
+    ...extras,
     messages: [{ role: 'user', content }],
-  });
+  } as never);
   if (response.stop_reason === 'refusal' || !response.parsed_output) return null;
   return response.parsed_output as unknown as Raw & { kind?: string };
+}
+
+/**
+ * Read with the cheap model; if that fails outright, or `wrong` says the answer doesn't hold
+ * together, read once more with the stronger one and keep its answer. If the re-read itself
+ * fails, `keepFirst` decides: a photo you just snapped keeps the rough first read to correct by
+ * hand; an email is better left unread, so the next hourly run tries it again.
+ */
+async function ask<S extends Record<string, unknown>>(
+  client: Anthropic,
+  content: Anthropic.Beta.BetaContentBlockParam[],
+  schema: S,
+  wrong: (out: Raw & { kind?: string }) => boolean,
+  keepFirst: boolean,
+): Promise<(Raw & { kind?: string }) | null> {
+  const first = await askOnce(client, READER(), content, schema).catch(() => null);
+  if (first && !wrong(first)) return first;
+  if (CHECKER() === READER()) return first;
+  try {
+    return (await askOnce(client, CHECKER(), content, schema)) ?? first;
+  } catch (e) {
+    if (keepFirst && first) return first;
+    throw e;
+  }
+}
+
+const MAX_AGE_DAYS = 7 * 366; // HMRC wants records kept for about six years; older than that is a misread
+
+/** Why a read receipt can't be trusted as it stands, or '' when it adds up. */
+export function doubtAbout(out: Pick<Raw, 'merchant' | 'date' | 'total' | 'vat'>, today = new Date().toISOString().slice(0, 10)): string {
+  const total = out.total ? parsePence(out.total) : 0;
+  const vat = out.vat ? parsePence(out.vat) : 0;
+  if (!(total > 0)) return 'no total';
+  if (!out.merchant.trim()) return 'no shop name';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(out.date) || Number.isNaN(Date.parse(out.date))) return 'no date';
+  const days = (Date.parse(today) - Date.parse(out.date)) / 86_400_000;
+  if (days < -2 || days > MAX_AGE_DAYS) return 'date out of range';
+  // UK VAT is at most 20%, so it can never be more than a sixth of the total.
+  if (vat > Math.ceil(total / 6) + 1) return 'VAT bigger than possible';
+  return '';
 }
 
 // ── Anything found in Gmail or Drive: first decide whether it's a purchase at all ──
@@ -120,7 +169,9 @@ export async function readFoundDoc(
   if (input.emailText) content.push({ type: 'text', text: `The email it came with:\n\n${input.emailText.slice(0, 12_000)}` });
   if (!content.length) return null;
   content.push({ type: 'text', text: DOC_PROMPT });
-  const out = await ask(client, content, DOC_SCHEMA);
+  // A purchase that doesn't add up is re-read; so is an attached PDF or photo the quick read
+  // waved away as "not a purchase" — attachments are where real receipts usually are.
+  const out = await ask(client, content, DOC_SCHEMA, (o) => (o.kind === 'purchase' ? doubtAbout(o) !== '' : Boolean(file) && o.kind === 'other'), false);
   if (!out) return null;
   const kind = out.kind === 'purchase' || out.kind === 'income' ? out.kind : 'other';
   return { kind, ...tidy(out) };

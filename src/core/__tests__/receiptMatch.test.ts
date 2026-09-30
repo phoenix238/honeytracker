@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { receiptCandidates, autoMatch } from '../receiptMatch.js';
+import { receiptCandidates, autoMatch, looseReceiptsFor, receiptOrigin } from '../receiptMatch.js';
 import type { Receipt } from '../types.js';
 import { txn } from './fixtures.js';
 
@@ -34,5 +34,27 @@ describe('receipt matching', () => {
   });
   it('needs an amount and a date to match anything', () => {
     expect(receiptCandidates(receipt({ totalPence: null }), [txn({ direction: 'out', amountPence: 2_350 })])).toEqual([]);
+  });
+});
+
+describe('finding a receipt by hand', () => {
+  const r = (id: string, over: Partial<Receipt>): Receipt => ({ id, uploadedAt: '', filename: 'photo.jpg', mime: 'image/jpeg', merchant: '', date: '2026-09-10', totalPence: 1000, vatPence: null, suggestedCategory: null, description: '', transactionId: null, ...over });
+  it('lists every loose receipt: same amount near the date, then the closest amounts, then unread ones', () => {
+    const t = txn({ direction: 'out', amountPence: 1000, date: '2026-09-10' });
+    const list = looseReceiptsFor(t, [
+      r('unread', { totalPence: null }),
+      r('far-off', { totalPence: 5000 }),
+      r('close', { totalPence: 1050 }),
+      r('exact', {}),
+      r('exact-but-old', { date: '2026-06-01' }),
+      r('taken', { transactionId: 'x' }),
+    ]);
+    expect(list.map((x) => x.id)).toEqual(['exact', 'exact-but-old', 'close', 'far-off', 'unread']);
+  });
+  it('says where each one came from', () => {
+    expect(receiptOrigin(r('a', { description: 'Ads (from Gmail: Your receipt)', mime: 'application/pdf' }))).toBe('from your email');
+    expect(receiptOrigin(r('b', { description: 'Fuel (from Google Drive)' }))).toBe('from Drive');
+    expect(receiptOrigin(r('c', { mime: 'text/plain; charset=utf-8', filename: 'Order.txt' }))).toBe('from your email');
+    expect(receiptOrigin(r('d', {}))).toBe('you snapped it');
   });
 });

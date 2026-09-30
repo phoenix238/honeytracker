@@ -53,3 +53,27 @@ export function receiptsFor(t: Pick<Transaction, 'direction' | 'amountPence' | '
     .filter((r) => !r.transactionId && r.totalPence != null && r.date && Math.abs(r.totalPence - t.amountPence) <= 1 && Math.abs(Date.parse(r.date) - at) <= windowDays * DAY)
     .sort((a, b) => Math.abs(Date.parse(a.date!) - at) - Math.abs(Date.parse(b.date!) - at));
 }
+
+/** Where a receipt came from, in words for a person: Gmail, Drive, or a photo you took. */
+export function receiptOrigin(r: Pick<Receipt, 'description' | 'filename' | 'mime'>): string {
+  if (/\(from Gmail/.test(r.description)) return 'from your email';
+  if (/\(from Google Drive\)/.test(r.description)) return 'from Drive';
+  if (/^(message|email)|\.eml$/i.test(r.filename) || /^text\/plain/.test(r.mime)) return 'from your email';
+  return 'you snapped it';
+}
+
+/**
+ * Every receipt not yet attached to anything, best guess first, for picking one by hand when
+ * no automatic match was found: the same amount near the date first, then the closest amounts
+ * (a tip added, a receipt with a typo), then ones with no total read at all.
+ */
+export function looseReceiptsFor(t: Pick<Transaction, 'amountPence' | 'date'>, receipts: readonly Receipt[], limit = 12): Receipt[] {
+  const at = Date.parse(t.date);
+  const score = (r: Receipt) => {
+    const days = r.date ? Math.abs(Date.parse(r.date) - at) / DAY : 365;
+    if (r.totalPence == null) return 2e9 + days;
+    const off = Math.abs(r.totalPence - t.amountPence);
+    return (off <= 1 && days <= 7 ? 0 : 1e9) + off * 10 + days;
+  };
+  return receipts.filter((r) => !r.transactionId).sort((a, b) => score(a) - score(b)).slice(0, limit);
+}

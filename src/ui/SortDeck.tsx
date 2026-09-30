@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ExpenseCategory, Invoice, Receipt, Transaction } from '../core/types';
-import { receiptsFor } from '../core/receiptMatch';
+import { receiptOrigin, receiptsFor } from '../core/receiptMatch';
 import { invoiceGuess, invoiceTotal, paidDifference } from '../core/invoices';
 import { formatGBP } from '../core/money';
 import { QUICK_CATEGORIES, categoryInfo } from '../core/hmrc';
@@ -434,7 +434,7 @@ export function SortDeck({ app, onClose }: { app: App; onClose: () => void }) {
                   <input type="checkbox" checked={attach} onChange={(e) => setAttach(e.target.checked)} style={{ marginTop: 2 }} />
                   <span>
                     🧾 Found its receipt: {guess.receipt.merchant || guess.receipt.filename}
-                    {guess.receipt.date ? ` · ${fmtDate(guess.receipt.date)}` : ''} · {/^(message|email)|\.eml$|text\/plain/i.test(`${guess.receipt.filename} ${guess.receipt.mime}`) ? 'from your email' : 'you snapped it'}.{' '}
+                    {guess.receipt.date ? ` · ${fmtDate(guess.receipt.date)}` : ''} · {receiptOrigin(guess.receipt)}.{' '}
                     Attaches when you swipe it as business.
                   </span>
                 </label>

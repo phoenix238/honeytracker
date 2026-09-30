@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Bucket, ExpenseCategory, Transaction } from '../core/types';
 import { CATEGORIES } from '../core/hmrc';
+import { looseReceiptsFor, receiptOrigin } from '../core/receiptMatch';
+import { formatGBP } from '../core/money';
 import { suggestPattern } from '../core/rules';
 import { T, fonts } from './theme';
 import { BUCKET_COLOR, BUCKET_LABEL, Button, Chip, Field, Label, Money, Sheet, fmtDate, inputStyle } from './components';
@@ -42,6 +44,7 @@ export function TransactionSheet({
   const [always, setAlways] = useState(false);
   const [pattern, setPattern] = useState('');
   const [history, setHistory] = useState<{ at: string; action: string; detail: unknown }[] | null>(null);
+  const [finding, setFinding] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -55,11 +58,13 @@ export function TransactionSheet({
     setAlways(false);
     setPattern(suggestPattern(txn).pattern);
     setHistory(null);
+    setFinding(false);
   }, [txn?.id]);
 
   if (!txn) return null;
   const business = bucket === 'business_income' || bucket === 'business_expense';
   const receipts = data.receipts.filter((r) => r.transactionId === txn.id);
+  const looseCount = data.receipts.filter((r) => !r.transactionId).length;
   const canEditFacts = txn.source === 'cash' || txn.source === 'manual';
   const choices = CHOICES.filter((c) => c.when === 'both' || c.when === txn.direction);
 
@@ -223,9 +228,21 @@ export function TransactionSheet({
             if (files.length) void app.uploadReceipts(files, txn.id);
           }}
         />
-        <Button onClick={() => fileRef.current?.click()} disabled={app.busy}>
-          <CameraIcon size={18} color={T.text} /> Add receipt
-        </Button>
+        {finding && (
+          <FindReceipt
+            app={app}
+            txn={txn}
+            onDone={() => setFinding(false)}
+          />
+        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {txn.direction === 'out' && !finding && looseCount > 0 && (
+            <Button onClick={() => setFinding(true)} style={{ flex: 1 }}>🔎 Find its receipt</Button>
+          )}
+          <Button onClick={() => fileRef.current?.click()} disabled={app.busy} style={{ flex: 1 }}>
+            <CameraIcon size={18} color={T.text} /> Add receipt
+          </Button>
+        </div>
       </div>
 
       {(txn.bucket === 'personal' || txn.bucket === 'transfer') && (
@@ -287,5 +304,49 @@ export function TransactionSheet({
         </div>
       )}
     </Sheet>
+  );
+}
+
+/**
+ * Pick the receipt for this line by hand, from everything brought in but not yet attached —
+ * emails and Drive files the Google finder kept, and photos you snapped. Best guesses first.
+ */
+function FindReceipt({ app, txn, onDone }: { app: App; txn: Transaction; onDone: () => void }) {
+  const list = looseReceiptsFor(txn, app.data!.receipts);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.5 }}>
+        Receipts not attached to anything yet, closest first. Tap one to attach it; 👁 to look first.
+      </div>
+      {list.map((r) => {
+        const off = r.totalPence == null ? null : r.totalPence - txn.amountPence;
+        return (
+          <div key={r.id} style={{ display: 'flex', gap: 8, alignItems: 'center', background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: '10px 12px' }}>
+            <button
+              type="button"
+              disabled={app.busy}
+              onClick={async () => { await app.updateReceipt(r.id, { transactionId: txn.id }); onDone(); }}
+              style={{ flex: 1, minWidth: 0, background: 'none', border: 'none', padding: 0, textAlign: 'left', color: T.text, cursor: 'pointer' }}
+            >
+              <span style={{ display: 'block', fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.merchant || r.filename}
+                {r.totalPence != null ? ` · ${formatGBP(r.totalPence)}` : ''}
+              </span>
+              <span style={{ display: 'block', fontSize: 11, color: T.textMuted, marginTop: 2 }}>
+                {[r.date ? fmtDate(r.date) : 'no date', receiptOrigin(r)].join(' · ')}
+                {' · '}
+                <span style={{ color: off === 0 || (off != null && Math.abs(off) <= 1) ? T.green : T.accent }}>
+                  {off == null ? 'no total read' : Math.abs(off) <= 1 ? 'same amount' : `${formatGBP(Math.abs(off))} ${off > 0 ? 'more' : 'less'}`}
+                </span>
+              </span>
+            </button>
+            <a href={receiptFileUrl(r.id)} target="_blank" rel="noreferrer" aria-label="Look at this receipt" style={{ fontSize: 16, textDecoration: 'none' }}>👁</a>
+          </div>
+        );
+      })}
+      <button type="button" onClick={onDone} style={{ background: 'none', border: 'none', color: T.textMuted, fontSize: 12, cursor: 'pointer', padding: 0, alignSelf: 'flex-start' }}>
+        Close
+      </button>
+    </div>
   );
 }
