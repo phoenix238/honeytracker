@@ -60,7 +60,11 @@ export function FreshSection({ app }: { app: App }) {
     setBusy(true);
     try {
       const res = await api.freshApply(upload.data, p.cutoff);
-      setStatus(`Done — ${res.inserted} payments from your spreadsheet are in${res.streamsMade.length ? `, and new streams made: ${res.streamsMade.join(', ')}` : ''}. From ${fmtDate(addDays(res.cutoff, 1))} your bank feed carries on.`);
+      const moved = [res.receipts ? `${res.receipts} receipt${res.receipts === 1 ? '' : 's'}` : '', res.invoices ? `${res.invoices} paid invoice${res.invoices === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+      const open = res.invoicesLeftOpen.length
+        ? ` ${res.invoicesLeftOpen.join(', ')} ${res.invoicesLeftOpen.length === 1 ? 'was' : 'were'} paid by a line that isn’t in your spreadsheet, so ${res.invoicesLeftOpen.length === 1 ? 'it shows' : 'they show'} as owed again — open ${res.invoicesLeftOpen.length === 1 ? 'it' : 'each'} in Invoices, tap Mark as paid and pick the payment.`
+        : '';
+      setStatus(`Done — ${res.inserted} payments from your spreadsheet are in${res.streamsMade.length ? `, and new streams made: ${res.streamsMade.join(', ')}` : ''}.${moved ? ` ${moved} moved onto their new lines.` : ''}${open} From ${fmtDate(addDays(res.cutoff, 1))} your bank feed carries on.`);
       setPreview(null);
       setUpload(null);
       await app.reload();
@@ -164,7 +168,8 @@ export function FreshSection({ app }: { app: App }) {
             <div style={{ fontSize: 12, color: T.textMuted, lineHeight: 1.6 }}>
               Replacing takes out the {p.removing.total} lines Honey has now up to {fmtDate(p.cutoff)}
               {p.removing.oldApp ? ` (including all ${p.removing.oldApp} old app records)` : ''} and puts your {p.count} in their place. {p.keeping} line{p.keeping === 1 ? '' : 's'} after
-              that stay. Your streams, rules, invoices and receipts stay. From {fmtDate(addDays(p.cutoff, 1))}, your bank feed carries on.
+              that stay. Only lines count towards your totals: receipts and invoices are kept as documents and move onto the matching line in your
+              spreadsheet — they don’t add anything. Your streams and rules stay. From {fmtDate(addDays(p.cutoff, 1))}, your bank feed carries on.
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <Button tone="primary" onClick={replace} disabled={busy || !p.count} style={{ flex: 2 }}>{busy ? 'Replacing…' : 'Replace with my spreadsheet'}</Button>

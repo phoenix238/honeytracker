@@ -286,3 +286,28 @@ export function planFresh(rows: readonly FreshRow[], existing: readonly Transact
     future: rows.filter((r) => r.date > today).map((r) => r.line),
   };
 }
+
+/**
+ * Receipts and invoices were pinned to lines the spreadsheet replaced. Each of those old lines
+ * finds its new line: same way, same amount, within a few days (nearest first, then the same
+ * name). One new line per old line, so two £60 payments on a day stay two.
+ */
+export function carryOver(
+  old: readonly Pick<Transaction, 'id' | 'date' | 'direction' | 'amountPence' | 'counterparty'>[],
+  fresh: readonly Pick<Transaction, 'id' | 'date' | 'direction' | 'amountPence' | 'counterparty'>[],
+  windowDays = 3,
+): Map<string, string> {
+  const days = (a: IsoDate, b: IsoDate) => Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  const taken = new Set<string>();
+  const out = new Map<string, string>();
+  for (const o of [...old].sort((a, b) => a.date.localeCompare(b.date))) {
+    const best = fresh
+      .filter((n) => !taken.has(n.id) && n.direction === o.direction && n.amountPence === o.amountPence && days(n.date, o.date) <= windowDays)
+      .sort((a, b) => days(a.date, o.date) - days(b.date, o.date) || Number(!same(a.counterparty, o.counterparty)) - Number(!same(b.counterparty, o.counterparty)))[0];
+    if (!best) continue;
+    taken.add(best.id);
+    out.set(o.id, best.id);
+  }
+  return out;
+}

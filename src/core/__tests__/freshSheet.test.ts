@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FRESH_COLUMNS, dateOf, looseCategory, penceOf, planFresh, readFreshSheet, type Cell } from '../freshSheet.js';
+import { FRESH_COLUMNS, carryOver, dateOf, looseCategory, penceOf, planFresh, readFreshSheet, type Cell } from '../freshSheet.js';
 import { txn } from './fixtures.js';
 
 const header = [...FRESH_COLUMNS] as Cell[];
@@ -123,5 +123,26 @@ describe('what starting fresh would do', () => {
       { taxYear: 2025, incomePence: 6000, costsPence: 2000, toSort: 0, rows: 2 },
       { taxYear: 2026, incomePence: 0, costsPence: 0, toSort: 2, rows: 2 },
     ]);
+  });
+});
+
+describe('receipts and invoices finding their new lines', () => {
+  const line = (id: string, date: string, amountPence: number, counterparty = 'X', direction: 'in' | 'out' = 'out') => ({ id, date, amountPence, counterparty, direction });
+
+  it('same way and amount, nearest date first, then the same name; one new line per old line', () => {
+    const old = [line('o1', '2026-03-10', 1200, 'LEBARA'), line('o2', '2026-03-10', 6000, 'SARAH', 'in'), line('o3', '2026-03-10', 6000, 'TOM', 'in')];
+    const fresh = [
+      line('n1', '2026-03-12', 1200, 'LEBARA'),
+      line('n2', '2026-03-10', 1200, 'Lebara Mobile'),
+      line('n3', '2026-03-10', 6000, 'tom', 'in'),
+      line('n4', '2026-03-10', 6000, 'sarah', 'in'),
+    ];
+    expect(carryOver(old, fresh)).toEqual(new Map([['o1', 'n2'], ['o2', 'n4'], ['o3', 'n3']]));
+  });
+
+  it('leaves an old line with no match in the sheet — wrong way, other amount, or too far off', () => {
+    const old = [line('o1', '2026-03-10', 1200), line('o2', '2026-03-10', 500), line('o3', '2026-03-10', 700)];
+    const fresh = [line('n1', '2026-03-10', 1200, 'X', 'in'), line('n2', '2026-03-10', 501), line('n3', '2026-03-14', 700)];
+    expect(carryOver(old, fresh).size).toBe(0);
   });
 });

@@ -4,7 +4,7 @@ import { findRule, applyRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
 import { sortTransfer } from '../src/core/transfers.js';
 import { mergeCertainDoubles } from './doubles.js';
-import { booksFrom } from './fresh.js';
+import { booksFrom, carryFreshLinks } from './fresh.js';
 import { londonDate, taxYearBounds, taxYearOf } from '../src/core/dates.js';
 import type { Invoice, Rule, Settings, Transaction } from '../src/core/types.js';
 import { invoiceForPayment } from '../src/core/invoices.js';
@@ -296,6 +296,11 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
     } catch (e) {
       result.errors.push(`CSTL: ${(e as Error).message}`);
     }
+  }
+  try {
+    await carryFreshLinks(repo);
+  } catch (e) {
+    result.errors.push(`Fresh start: ${(e as Error).message}`);
   }
   try {
     result.invoicesPaid = await matchInvoicePayments(repo);

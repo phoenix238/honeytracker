@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
 import type { Repo } from './repo.js';
-import { matchInvoicePayments, matchLooseReceipts } from './sync.js';
-import { FRESH_COLUMNS, WHAT_CHOICES, planFresh, readFreshSheet, whatLabel, type Cell, type FreshRow } from '../src/core/freshSheet.js';
+import { linkInvoicePayment, matchInvoicePayments, matchLooseReceipts } from './sync.js';
+import { FRESH_COLUMNS, WHAT_CHOICES, carryOver, planFresh, readFreshSheet, whatLabel, type Cell, type FreshRow } from '../src/core/freshSheet.js';
 import { parseCsv } from '../src/core/csv.js';
 import { CATEGORIES, categoryInfo } from '../src/core/hmrc.js';
 import { mkId } from '../src/core/id.js';
@@ -209,6 +209,8 @@ interface Backup {
   insertedIds: string[];
   receiptLinks: [string, string][];
   invoiceLinks: [string, string][];
+  /** Set once the receipts and invoices have moved onto their new lines — it happens once. */
+  carried?: { invoices: number; receipts: number; invoicesLeftOpen: string[] };
 }
 
 const COLORS = ['#E0A92E', '#6E86D0', '#5BBF8A', '#D66E8E', '#9B7BD4', '#4FB6C4'];
@@ -258,10 +260,50 @@ export async function startFresh(r: Repo, rows: readonly FreshRow[], today: stri
   await r.insertMany(inserted);
   await r.setKv(BOOKS_FROM, { cutoff: plan.cutoff, at });
   await r.audit(null, 'fresh_start', { cutoff: plan.cutoff, inserted: inserted.length, removed: removed.length });
-  // Invoices paid by a payment that quotes their number, and receipts that fit a line, find their new lines.
+  const carried = await carryFreshLinks(r);
+  // Anything else: invoices paid by a payment that quotes their number, receipts that fit a line.
   await matchInvoicePayments(r).catch(() => 0);
   await matchLooseReceipts(r).catch(() => 0);
-  return { inserted: inserted.length, removed: removed.length, cutoff: plan.cutoff, streamsMade };
+  return { inserted: inserted.length, removed: removed.length, cutoff: plan.cutoff, streamsMade, ...(carried ?? { invoices: 0, receipts: 0, invoicesLeftOpen: [] }) };
+}
+
+/**
+ * Receipts and paid invoices were pinned to lines the spreadsheet replaced: move each onto the
+ * spreadsheet's line for the same payment. Neither adds money — receipts are the evidence, an
+ * invoice is paid by the line it points at. Runs once per fresh start (the sync runs it too, for a
+ * fresh start made before this existed); an invoice whose payment isn't in the sheet stays owed.
+ */
+export async function carryFreshLinks(r: Repo): Promise<Backup['carried'] | null> {
+  const b = await r.getKv<Backup>(BACKUP);
+  if (!b || b.carried) return null;
+  const inserted = new Set(b.insertedIds);
+  const fresh = (await r.listTransactions()).filter((t) => inserted.has(t.id));
+  const linked = new Set([...b.receiptLinks, ...b.invoiceLinks].map(([, tx]) => tx));
+  const moveTo = carryOver(b.removed.filter((t) => linked.has(t.id)), fresh);
+  let invoices = 0;
+  let receipts = 0;
+  const invoicesLeftOpen: string[] = [];
+  for (const [invId, oldTx] of b.invoiceLinks) {
+    const inv = await r.getInvoice(invId);
+    if (!inv || inv.paidTransactionId || inv.status === 'void') continue;
+    const to = moveTo.get(oldTx);
+    if (!to) {
+      invoicesLeftOpen.push(inv.number);
+      continue;
+    }
+    await linkInvoicePayment(r, inv, to, false);
+    invoices++;
+  }
+  const now = new Map((await r.listReceipts()).map((rc) => [rc.id, rc]));
+  for (const [rcId, oldTx] of b.receiptLinks) {
+    const to = moveTo.get(oldTx);
+    if (!to || !now.get(rcId) || now.get(rcId)!.transactionId) continue;
+    await r.updateReceipt(rcId, { transactionId: to });
+    receipts++;
+  }
+  const carried = { invoices, receipts, invoicesLeftOpen };
+  await r.setKv(BACKUP, { ...b, carried });
+  return carried;
 }
 
 /** Put everything back as it was before the last fresh start. */

@@ -999,6 +999,64 @@ describe('starting fresh from your own spreadsheet', () => {
     expect(state.transactions.map((t: Transaction) => t.id).sort()).toEqual([...before.map((t) => t.id), state.transactions.find((t: Transaction) => t.sourceId === 'fs-c').id].sort());
   });
 
+  it('moves receipts and paid invoices onto the sheet’s lines — they add nothing; a payment left out leaves its invoice owed', async () => {
+    await signIn();
+    const stream = (await call('POST', '/api/streams', { name: 'Coffee' })).data;
+    feed.push(item('fc-pay', 162, 'IN', daysAgo(15), { counterPartyName: 'ETHICAL CAFF', reference: 'SHIFTS', source: 'FASTER_PAYMENTS_IN' }));
+    feed.push(item('fc-gone', 80, 'IN', daysAgo(18), { counterPartyName: 'SOMEONE', source: 'FASTER_PAYMENTS_IN' }));
+    feed.push(item('fc-phone', 12, 'OUT', daysAgo(20), { counterPartyName: 'LEBARA', source: 'MASTER_CARD' }));
+    await call('POST', '/api/sync', {});
+    let state = (await call('GET', '/api/state')).data;
+    const bank = (uid: string) => state.transactions.find((t: Transaction) => t.sourceId === uid);
+    const [caffRow, goneRow, phoneRow] = [bank('fc-pay'), bank('fc-gone'), bank('fc-phone')];
+    const a = (await call('POST', '/api/invoices', { clientName: 'Ethical Caff', streamId: stream.id, lines: [{ description: 'Shifts', quantity: 1, unitPence: 16200 }] })).data;
+    const b = (await call('POST', '/api/invoices', { clientName: 'Someone', lines: [{ description: 'Odd job', quantity: 1, unitPence: 8000 }] })).data;
+    for (const [inv, row] of [[a, caffRow], [b, goneRow]]) {
+      await call('PATCH', `/api/invoices/${inv.id}`, { status: 'sent' });
+      await call('POST', `/api/invoices/${inv.id}/pay`, { transactionId: row.id });
+    }
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const rc = (await call('POST', '/api/receipts', { filename: 'lebara.png', mime: 'image/png', dataBase64: png })).data.receipt;
+    await call('PATCH', `/api/receipts/${rc.id}`, { totalPence: 1200, date: phoneRow.date });
+    await call('POST', '/api/sync', {});
+    expect((await call('GET', '/api/state')).data.receipts[0].transactionId).toBe(phoneRow.id);
+
+    // The sheet: the two kept lines sorted, the £80 left out.
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await download()) as unknown as ExcelJS.Buffer);
+    const ws = wb.getWorksheet('Payments')!;
+    const rowOf = (who: string) => [2, 3, 4].find((i) => ws.getRow(i).getCell(4).value === who)!;
+    ws.getRow(rowOf('LEBARA')).getCell(6).value = 'Business cost';
+    ws.getRow(rowOf('LEBARA')).getCell(8).value = 'Phone, stationery & office';
+    ws.spliceRows(rowOf('SOMEONE'), 1);
+    const dataBase64 = Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+    const preview = (await call('POST', '/api/fresh/preview', { dataBase64 })).data;
+    const done = (await call('POST', '/api/fresh/apply', { dataBase64, cutoff: preview.plan.cutoff })).data;
+    expect(done).toMatchObject({ inserted: 2, removed: 3, invoices: 1, receipts: 1, invoicesLeftOpen: [b.number] });
+
+    state = (await call('GET', '/api/state')).data;
+    expect(state.transactions).toHaveLength(2); // nothing added for the receipt or the invoices
+    const caff = state.transactions.find((t: Transaction) => t.counterparty === 'ETHICAL CAFF');
+    const phone = state.transactions.find((t: Transaction) => t.counterparty === 'LEBARA');
+    expect(state.invoices.find((i: any) => i.id === a.id).paidTransactionId).toBe(caff.id);
+    expect(caff).toMatchObject({ source: 'sheet', bucket: 'business_income', classifiedBy: 'user', meta: { invoiceId: a.id } });
+    expect(state.invoices.find((i: any) => i.id === b.id).paidTransactionId).toBeNull();
+    expect(state.receipts[0].transactionId).toBe(phone.id);
+    expect(phone).toMatchObject({ bucket: 'business_expense', category: 'adminCosts', receiptIds: [rc.id] });
+
+    // Once only: unpaying the invoice by hand isn't redone by the next sync.
+    await call('POST', `/api/invoices/${a.id}/unpay`, {});
+    await call('POST', '/api/sync', {});
+    expect((await call('GET', '/api/state')).data.invoices.find((i: any) => i.id === a.id).paidTransactionId).toBeNull();
+
+    await call('POST', '/api/fresh/undo', {});
+    state = (await call('GET', '/api/state')).data;
+    expect(state.invoices.find((i: any) => i.id === a.id).paidTransactionId).toBe(caffRow.id);
+    expect(state.invoices.find((i: any) => i.id === b.id).paidTransactionId).toBe(goneRow.id);
+    expect(state.receipts[0].transactionId).toBe(phoneRow.id);
+  });
+
   it('says what it can’t read, and refuses a file that isn’t a spreadsheet', async () => {
     await signIn();
     const csv = 'Date,Amount,What is it?\n2025-10-01,60,Business income\nsometime,5,Personal\n';
