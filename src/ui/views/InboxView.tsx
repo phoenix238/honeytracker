@@ -3,9 +3,9 @@ import { T } from '../theme';
 import { BUCKET_COLOR, BUCKET_LABEL, Button, Card, Chip, Empty, Label, Money, Title, fmtDate, inputStyle } from '../components';
 import { TransactionSheet } from '../TransactionSheet';
 import { needsReceipt } from '../../core/ledger';
-import { taxYearBounds, taxYearLabel, taxYearOf, withinBounds } from '../../core/dates';
+import { datesClose, taxYearBounds, taxYearLabel, taxYearOf, withinBounds } from '../../core/dates';
 import { categoryInfo } from '../../core/hmrc';
-import { api } from '../api';
+import { api, type CstlBankUnlinked } from '../api';
 import type { Transaction } from '../../core/types';
 import type { App } from '../useApp';
 import { DoublesSheet, checkCounts, checkSummary as summary } from './DoublesSheet';
@@ -123,6 +123,58 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
           >
             Looks right — confirm all {aiRows.length}
           </Button>
+        </Card>
+      )}
+
+      {data.cstlBankUnlinked.length > 0 && (
+        <Card style={{ borderColor: T.blue + '66' }}>
+          <Label color={T.blue}>CSTL sessions paid by transfer — which bank line?</Label>
+          <div style={{ fontSize: 12, color: T.textMuted, margin: '6px 0 8px', lineHeight: 1.5 }}>
+            Marked paid in CSTL without picking the payment. The money is already here as a bank line — tap the one it was.
+          </div>
+          {data.cstlBankUnlinked.map((o) => {
+            const lines = bankLinesFor(o, data.transactions);
+            return (
+              <div key={o.bookingId} style={{ padding: '8px 0', borderTop: `1px solid ${T.border}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div style={{ flex: 1, fontSize: 13 }}>
+                    <Money pence={o.amountPence} size={13} /> · {fmtDate(o.date)}
+                    <div style={{ fontSize: 11, color: T.textMuted }}>{o.note}</div>
+                  </div>
+                  <Button
+                    tone="quiet"
+                    style={{ padding: '6px 8px', fontSize: 12 }}
+                    onClick={async () => {
+                      await api.dismissCstl(o.bookingId).catch(() => undefined);
+                      await app.reload();
+                    }}
+                  >
+                    Sorted already
+                  </Button>
+                </div>
+                {lines.length === 0 && (
+                  <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>No bank line for this amount nearby yet — it shows up here after the bank syncs.</div>
+                )}
+                {lines.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={async () => {
+                      await api.linkCstl(o.bookingId, t.id).catch(() => undefined);
+                      await app.reload();
+                    }}
+                    style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 8, marginTop: 6, padding: '7px 10px', background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, textAlign: 'left', cursor: 'pointer', fontSize: 12 }}
+                  >
+                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {fmtDate(t.date)} · {t.counterparty || t.reference || 'No name from the bank'}
+                      {t.reference && t.counterparty ? ` · “${t.reference}”` : ''}
+                    </span>
+                    <span style={{ color: T.blue, fontWeight: 600 }}>This one</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
         </Card>
       )}
 
@@ -250,6 +302,21 @@ export function InboxView({ app, sort, toSort }: { app: App; sort: () => void; t
   );
 }
 
+/**
+ * Bank lines that could be a CSTL session's transfer: money in, the exact amount, within three
+ * weeks, and not already tied to another session. Unsorted ones first, then nearest in date.
+ */
+function bankLinesFor(o: CstlBankUnlinked, transactions: Transaction[]): Transaction[] {
+  const gap = (t: Transaction) => Math.abs(new Date(t.date).getTime() - new Date(o.date).getTime());
+  return transactions
+    .filter((t) => t.direction === 'in' && t.source !== 'cstl' && !t.meta.cstlBookingId && t.amountPence === o.amountPence && datesClose(t.date, o.date, 21))
+    .sort((a, b) => Number(b.bucket === 'unreviewed') - Number(a.bucket === 'unreviewed') || gap(a) - gap(b))
+    .slice(0, 4);
+}
+
+/** Cash in hand, whether you typed it here or CSTL recorded it. */
+const isCash = (t: Transaction) => t.source === 'cash' || t.meta.method === 'cash';
+
 function Row({ t, streamName, onOpen }: { t: Transaction; streamName?: string; onOpen: () => void }) {
   const detail =
     t.bucket === 'business_expense' && t.category
@@ -268,7 +335,7 @@ function Row({ t, streamName, onOpen }: { t: Transaction; streamName?: string; o
           {t.counterparty || t.reference || '—'}
         </span>
         <span style={{ display: 'block', fontSize: 11, color: T.textMuted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {[t.classifiedBy === 'ai' ? `🤖 ${t.meta.aiConfidence ?? ''}` : '', fmtDate(t.date), detail, streamName, t.receiptIds.length ? '🧾' : '', t.source === 'cash' ? 'cash' : ''].filter(Boolean).join(' · ')}
+          {[t.classifiedBy === 'ai' ? `🤖 ${t.meta.aiConfidence ?? ''}` : '', fmtDate(t.date), detail, streamName, t.receiptIds.length ? '🧾' : '', isCash(t) ? '💷 cash' : ''].filter(Boolean).join(' · ')}
         </span>
       </span>
       <Money pence={t.amountPence} signed={t.direction} color={t.direction === 'in' ? T.green : T.text} size={14} />

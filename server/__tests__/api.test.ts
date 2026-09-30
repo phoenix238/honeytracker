@@ -234,6 +234,67 @@ describe('CSTL', () => {
     expect(data.cstlOther).toEqual([]);
   });
 
+  it('titles a CSTL cash session as cash, so it reads as cash in every list', async () => {
+    await signIn();
+    cstlEvents.push({ bookingId: 'c1', paidAt: daysAgo(2), amountPence: 6000, method: 'cash', feedItemUid: null, paymentRef: 'JS-4', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' });
+    await call('POST', '/api/sync', {});
+    const row = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.source === 'cstl');
+    expect(row).toMatchObject({ counterparty: 'Cash · CSTL client JS-4', bucket: 'business_income', meta: { method: 'cash' } });
+  });
+
+  it('lists a transfer CSTL marked paid without picking the payment, and files the line you point at', async () => {
+    await signIn();
+    feed.push(item('tx-1', 60, 'IN', daysAgo(6), { counterPartyName: 'MRS K JONES', reference: 'thanks' }));
+    cstlEvents.push({ bookingId: 'u1', paidAt: daysAgo(2), amountPence: 6000, method: 'bank', feedItemUid: null, paymentRef: 'KJ-7', receiptNumber: '', clinic: 'Waterloo', note: 'Bank transfer' });
+    const sync = await call('POST', '/api/sync', {});
+    expect(sync.data.cstl).toMatchObject({ bankUnlinked: 1, matchedBank: 0, cashRows: 0 });
+
+    let { data } = await call('GET', '/api/state');
+    // Never added as a row of its own — the money is already here once, as the bank line.
+    expect(data.transactions.filter((t: Transaction) => t.source === 'cstl')).toHaveLength(0);
+    expect(data.cstlBankUnlinked).toMatchObject([{ bookingId: 'u1', amountPence: 6000, paymentRef: 'KJ-7' }]);
+
+    const line = data.transactions.find((t: Transaction) => t.sourceId === 'tx-1');
+    const linked = await call('POST', '/api/cstl/link', { bookingId: 'u1', transactionId: line.id });
+    expect(linked.status).toBe(200);
+    ({ data } = await call('GET', '/api/state'));
+    expect(data.transactions.find((t: Transaction) => t.id === line.id)).toMatchObject({
+      bucket: 'business_income', streamId: data.settings.cstlStreamId, classifiedBy: 'user', meta: { cstlBookingId: 'u1', cstlRef: 'KJ-7' },
+    });
+    expect(data.cstlBankUnlinked).toEqual([]);
+
+    // The next sync sees it's linked and doesn't list it again.
+    const again = await call('POST', '/api/sync', {});
+    expect(again.data.cstl.bankUnlinked).toBe(0);
+  });
+
+  it('won\'t tie one bank line to two sessions, or a CSTL row to a session', async () => {
+    await signIn();
+    feed.push(item('tx-1', 60, 'IN', daysAgo(3)));
+    cstlEvents.push(
+      { bookingId: 'u1', paidAt: daysAgo(2), amountPence: 6000, method: 'bank', feedItemUid: null, paymentRef: 'A-1', receiptNumber: '', clinic: 'Waterloo', note: '' },
+      { bookingId: 'u2', paidAt: daysAgo(2), amountPence: 6000, method: 'bank', feedItemUid: null, paymentRef: 'B-2', receiptNumber: '', clinic: 'Waterloo', note: '' },
+      { bookingId: 'c1', paidAt: daysAgo(2), amountPence: 6000, method: 'cash', feedItemUid: null, paymentRef: 'C-3', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' },
+    );
+    await call('POST', '/api/sync', {});
+    const { data } = await call('GET', '/api/state');
+    const line = data.transactions.find((t: Transaction) => t.sourceId === 'tx-1');
+    const cash = data.transactions.find((t: Transaction) => t.source === 'cstl');
+    expect((await call('POST', '/api/cstl/link', { bookingId: 'u1', transactionId: line.id })).status).toBe(200);
+    expect((await call('POST', '/api/cstl/link', { bookingId: 'u2', transactionId: line.id })).status).toBe(409);
+    expect((await call('POST', '/api/cstl/link', { bookingId: 'u2', transactionId: cash.id })).status).toBe(400);
+  });
+
+  it('"sorted already" takes an unlinked transfer off the list for good', async () => {
+    await signIn();
+    cstlEvents.push({ bookingId: 'u1', paidAt: daysAgo(2), amountPence: 6000, method: 'bank', feedItemUid: null, paymentRef: 'A-1', receiptNumber: '', clinic: 'Waterloo', note: '' });
+    await call('POST', '/api/sync', {});
+    await call('POST', '/api/cstl/dismiss', { bookingId: 'u1' });
+    expect((await call('GET', '/api/state')).data.cstlBankUnlinked).toEqual([]);
+    const again = await call('POST', '/api/sync', {});
+    expect(again.data.cstl.bankUnlinked).toBe(0);
+  });
+
   it('never overrides a classification you made yourself', async () => {
     await signIn();
     feed.push(item('bank-1', 80, 'IN', daysAgo(5)));

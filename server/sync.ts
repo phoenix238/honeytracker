@@ -16,7 +16,7 @@ import { invoiceForPayment } from '../src/core/invoices.js';
 export interface SyncResult {
   at: string;
   starling: { configured: boolean; accounts: number; newRows: number; autoClassified: number };
-  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; unpricedSkipped: number; voided: number };
+  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; bankUnlinked: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
   invoicesPaid: number;
   /** Old-app copies of money the bank now shows, merged into the bank's line. */
@@ -142,10 +142,25 @@ async function ensureCstlStream(repo: Repo, settings: Settings): Promise<string>
   return stream.id;
 }
 
-function cstlNote(e: CstlEvent): string {
+/** A session CSTL says was paid by transfer, without saying which bank payment it was. */
+export interface CstlBankUnlinked {
+  bookingId: string;
+  date: string;
+  amountPence: number;
+  paymentRef: string;
+  clinic: string;
+  note: string;
+}
+
+export function cstlNote(e: Pick<CstlEvent, 'clinic' | 'paymentRef' | 'receiptNumber'>): string {
   return ['CSTL session', e.clinic, e.paymentRef && `ref ${e.paymentRef}`, e.receiptNumber && `receipt ${e.receiptNumber}`]
     .filter(Boolean)
     .join(' · ');
+}
+
+/** The title a CSTL cash row shows everywhere — "Cash" first, so it reads at a glance. */
+function cashCounterparty(paymentRef: string): string {
+  return paymentRef ? `Cash · CSTL client ${paymentRef}` : 'Cash · CSTL client';
 }
 
 export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], result: SyncResult, windowStart: string): Promise<void> {
@@ -157,6 +172,7 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
   // Sessions whose cash payment you merged into a bank line (it went into the bank after all).
   const inBank = new Set((await repo.listTransactions()).filter((t) => t.source !== 'cstl' && t.meta.cstlBookingId).map((t) => t.meta.cstlBookingId!));
   const other: { bookingId: string; date: string; amountPence: number; note: string }[] = [];
+  const unlinked: CstlBankUnlinked[] = [];
 
   for (const e of events) {
     seenBookings.add(e.bookingId);
@@ -169,9 +185,15 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
     // Up to your spreadsheet's last date, the spreadsheet already has it.
     if (cutoff && date <= cutoff) continue;
 
-    // A bank payment CSTL recorded by hand (not matched from the feed): the bank row is in the
-    // ledger already and is classified there, so there's nothing to add here.
-    if (e.method === 'bank' && !e.feedItemUid) continue;
+    // Paid by transfer, but marked by hand in CSTL without picking the bank payment: the money
+    // is already here as a bank line, CSTL just can't say which. Never added (that would count
+    // it twice) — listed for you to point at the line, unless you already have.
+    if (e.method === 'bank' && !e.feedItemUid) {
+      if (!inBank.has(e.bookingId) && !dismissed.has(e.bookingId)) {
+        unlinked.push({ bookingId: e.bookingId, date, amountPence: e.amountPence, paymentRef: e.paymentRef, clinic: e.clinic, note: cstlNote(e) });
+      }
+      continue;
+    }
 
     if (e.method === 'bank' && e.feedItemUid) {
       const bank = await repo.findBySource('starling', e.feedItemUid);
@@ -194,13 +216,14 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
       if (!existing) {
         await repo.insertTransaction({
           date, amountPence: e.amountPence, direction: 'in', source: 'cstl', sourceId: `booking:${e.bookingId}`,
-          counterparty: e.paymentRef ? `CSTL client ${e.paymentRef}` : 'CSTL client', reference: e.receiptNumber,
+          counterparty: cashCounterparty(e.paymentRef), reference: e.receiptNumber,
           bucket: 'business_income', streamId, category: null, businessPercent: 100, note: `Cash · ${cstlNote(e)}`,
           classifiedBy: 'cstl', meta: { ...meta, method: 'cash' },
         });
         result.cstl.cashRows++;
-      } else if (existing.amountPence !== e.amountPence || existing.date !== date) {
-        await repo.updateTransaction(existing.id, { amountPence: e.amountPence, date });
+      } else if (existing.amountPence !== e.amountPence || existing.date !== date || existing.counterparty !== cashCounterparty(e.paymentRef)) {
+        // Rows added before cash was named in the title catch up here too.
+        await repo.updateTransaction(existing.id, { amountPence: e.amountPence, date, counterparty: cashCounterparty(e.paymentRef) });
       }
       continue;
     }
@@ -212,6 +235,8 @@ export async function applyCstlEvents(repo: Repo, events: readonly CstlEvent[], 
   }
   result.cstl.otherPaid = other.length;
   await repo.setKv('cstl:other', other);
+  result.cstl.bankUnlinked = unlinked.length;
+  await repo.setKv('cstl:bankUnlinked', unlinked);
 
   // A cash payment CSTL no longer shows as paid (marked unpaid, deleted) goes back to review.
   for (const t of await repo.listTransactions()) {
@@ -277,7 +302,7 @@ export async function runSync(repo: Repo, fetchImpl: typeof fetch = fetch): Prom
   const result: SyncResult = {
     at: new Date().toISOString(),
     starling: { configured: false, accounts: 0, newRows: 0, autoClassified: 0 },
-    cstl: { configured: cstlConfigured(), matchedBank: 0, cashRows: 0, otherPaid: 0, unpricedSkipped: 0, voided: 0 },
+    cstl: { configured: cstlConfigured(), matchedBank: 0, cashRows: 0, otherPaid: 0, bankUnlinked: 0, unpricedSkipped: 0, voided: 0 },
     receiptsMatched: 0,
     invoicesPaid: 0,
     doublesMerged: 0,

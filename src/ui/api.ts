@@ -32,7 +32,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 export interface SyncResult {
   at: string;
   starling: { configured: boolean; accounts: number; newRows: number; autoClassified: number };
-  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; unpricedSkipped: number; voided: number };
+  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; bankUnlinked?: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
   invoicesPaid: number;
   errors: string[];
@@ -45,6 +45,16 @@ export interface CstlOther {
   note: string;
 }
 
+/** A CSTL session paid by transfer that CSTL couldn't tie to a bank payment. */
+export interface CstlBankUnlinked {
+  bookingId: string;
+  date: string;
+  amountPence: number;
+  paymentRef: string;
+  clinic: string;
+  note: string;
+}
+
 export interface AppState {
   transactions: Transaction[];
   streams: Stream[];
@@ -53,6 +63,7 @@ export interface AppState {
   settings: Settings;
   lastSync: SyncResult | null;
   cstlOther: CstlOther[];
+  cstlBankUnlinked: CstlBankUnlinked[];
   invoices: Invoice[];
   invoiceCounter: number;
   storage: { usedBytes: number; limitBytes: number };
@@ -120,6 +131,7 @@ export const api = {
   saveStream: (s: Partial<Stream> & { name: string }) => call<Stream>('POST', '/api/streams', s),
   addRule: (r: Omit<Rule, 'id' | 'createdAt'> & { applyToExisting?: boolean }) => call<{ rule: Rule; applied: number }>('POST', '/api/rules', r),
   dismissCstl: (bookingId: string) => call<{ ok: true }>('POST', '/api/cstl/dismiss', { bookingId }),
+  linkCstl: (bookingId: string, transactionId: string) => call<Transaction>('POST', '/api/cstl/link', { bookingId, transactionId }),
   deleteRule: (id: string) => call<{ ok: true }>('DELETE', `/api/rules/${id}`),
   saveSettings: (s: Partial<Settings>) => call<Settings>('PUT', '/api/settings', s),
 

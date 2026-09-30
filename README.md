@@ -17,7 +17,9 @@ ledger, you say what each one is, and the tax return adds itself up as you go.
 
 - **CSTL** runs the practice and owns nothing tax-related. It exposes a money-only feed
   (`/api/finance/events`); Honey uses the Starling transaction id to label the bank row
-  it already has, adds cash sessions, and lists card/other ones for you to decide.
+  it already has, adds cash sessions (titled "Cash · CSTL client …"), and lists card/other
+  ones for you to decide. A transfer CSTL marked paid without picking the payment is listed
+  with the matching bank lines, one tap to file the right one — never added a second time.
 - **Honeypot0101** is retired: import its "Export backup" file once (Settings → Bring in
   old records). Records are matched to their bank lines, not added twice.
 

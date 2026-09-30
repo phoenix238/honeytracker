@@ -1,7 +1,7 @@
 import { getDb, ConfigError } from './db.js';
 import { repo as makeRepo, type Repo, type NewTransaction } from './repo.js';
 import { AuthConfigError, checkPassword, clearCookie, isCron, isSignedIn, sessionCookie } from './auth.js';
-import { runSync, cstlConfigured, type SyncResult } from './sync.js';
+import { runSync, cstlConfigured, type CstlBankUnlinked, type SyncResult } from './sync.js';
 import { starlingTokens } from './starling.js';
 import { extractReceipt, receiptsAiConfigured, type ReadContext } from './receipts.js';
 import { FILE_TYPES, dropGoogleToken, googleConnected, isGoogleScript, newGoogleToken, takeFoundItem, type FoundItem } from './google.js';
@@ -128,8 +128,10 @@ function calendarLink(v: unknown): string {
 }
 
 async function dropCstlOther(r: Repo, bookingId: string): Promise<void> {
-  const list = (await r.getKv<{ bookingId: string }[]>('cstl:other')) ?? [];
-  await r.setKv('cstl:other', list.filter((x) => x.bookingId !== bookingId));
+  for (const key of ['cstl:other', 'cstl:bankUnlinked']) {
+    const list = (await r.getKv<{ bookingId: string }[]>(key)) ?? [];
+    if (list.some((x) => x.bookingId === bookingId)) await r.setKv(key, list.filter((x) => x.bookingId !== bookingId));
+  }
 }
 
 /** The database plan's size limit. Neon's free plan is 0.5 GB; set DB_STORAGE_LIMIT_MB after upgrading. */
@@ -229,7 +231,7 @@ function config() {
 }
 
 async function state(r: Repo) {
-  const [transactions, streams, rules, receipts, settings, lastSync, cstlOther, invoices, invoiceCounter, dbBytes] = await Promise.all([
+  const [transactions, streams, rules, receipts, settings, lastSync, cstlOther, cstlBankUnlinked, invoices, invoiceCounter, dbBytes] = await Promise.all([
     r.listTransactions(),
     r.listStreams(),
     r.listRules(),
@@ -237,13 +239,14 @@ async function state(r: Repo) {
     r.getSettings(),
     r.getKv<SyncResult>('sync:last'),
     r.getKv<unknown[]>('cstl:other'),
+    r.getKv<unknown[]>('cstl:bankUnlinked'),
     r.listInvoices(),
     r.peekInvoiceCounter(),
     r.databaseBytes().catch(() => 0),
   ]);
   const [googleOn, google, fresh] = await Promise.all([googleConnected(r), r.googleSummary(), freshStatus(r)]);
   return {
-    transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], invoices, invoiceCounter, fresh,
+    transactions, streams, rules, receipts, settings, lastSync, cstlOther: cstlOther ?? [], cstlBankUnlinked: cstlBankUnlinked ?? [], invoices, invoiceCounter, fresh,
     storage: { usedBytes: dbBytes, limitBytes: storageLimitBytes() },
     google: { connected: googleOn, ...google },
     config: config(), today: today(),
@@ -391,6 +394,26 @@ const routes: [string, RegExp, Handler][] = [
     if (!created) throw new HttpError(409, 'That session is already in the ledger.');
     if (cstlBooking) await dropCstlOther(r, cstlBooking);
     return json(created, 201);
+  }],
+
+  // "This bank line is that session" — for a session CSTL marked paid by transfer without
+  // picking the payment. Files the line as CSTL income, as your own decision.
+  ['POST', /^\/api\/cstl\/link$/, async (req, r) => {
+    const b = await body(req);
+    const bookingId = str(b.bookingId, 64);
+    const t = await r.getTransaction(str(b.transactionId, 64));
+    if (!bookingId || !t) throw new HttpError(404, 'Not found');
+    if (t.direction !== 'in' || t.source === 'cstl') throw new HttpError(400, 'Pick the money that came in to the bank.');
+    if (t.meta.cstlBookingId && t.meta.cstlBookingId !== bookingId) throw new HttpError(409, 'That line is already another CSTL session.');
+    const session = ((await r.getKv<CstlBankUnlinked[]>('cstl:bankUnlinked')) ?? []).find((x) => x.bookingId === bookingId);
+    const settings = await r.getSettings();
+    await r.updateTransaction(t.id, {
+      bucket: 'business_income', streamId: settings.cstlStreamId, category: null, classifiedBy: 'user',
+      note: t.note || session?.note || 'CSTL session',
+      meta: { cstlBookingId: bookingId, ...(session ? { cstlRef: session.paymentRef, clinic: session.clinic } : {}) },
+    });
+    await dropCstlOther(r, bookingId);
+    return json(await r.getTransaction(t.id));
   }],
 
   // "It's already in the bank" — take a card/other CSTL session off the list for good.
