@@ -1,14 +1,13 @@
 import { isBankRow, type Transaction } from './types.js';
-import { isYou, nameKey } from './transfers.js';
+import { nameKey } from './transfers.js';
 
-// The same money in the ledger twice, and old-app records the bank can't back up.
+// The same money in the ledger twice. The sync and statement imports merge the certain ones on
+// their own, so nothing needs checking by hand:
 //
 // - A copy: the bank's line, and the same money recorded somewhere else — the old app, CSTL
 //   marking a session paid in cash, an invoice marked "paid in cash", a line added by hand.
 // - A statement twin: one payment brought in twice from two bank sources (the live Starling
 //   feed and a statement file of the same account).
-// - An unbacked old-app record: nothing in the bank matches it. Either it was cash (real income,
-//   keep it) or it isn't real money in these accounts (remove it).
 //
 // The bank's line is always the one kept; merging moves anything useful on the other onto it.
 
@@ -35,15 +34,6 @@ export interface Double {
 }
 
 const counts = (t: Transaction) => t.bucket === 'business_income' || t.bucket === 'business_expense';
-
-/** Where the copy came from, in words. */
-export function copyKind(t: Pick<Transaction, 'source' | 'meta'>): string {
-  if (t.source === 'import') return 'Old app record';
-  if (t.source === 'cstl') return 'CSTL: paid in cash';
-  if (t.source === 'cash') return t.meta.invoiceId ? 'Invoice marked paid in cash' : 'Cash you added';
-  if (t.source === 'monzo' || t.source === 'bankcsv') return `Statement file${t.meta.account ? ` (${t.meta.account})` : ''}`;
-  return 'Added by hand';
-}
 
 /** A bank line already tied to something else of the same kind can't be this copy's twin. */
 function tiedElsewhere(bank: Transaction, copy: Transaction): boolean {
@@ -131,25 +121,4 @@ export function findDoubles(txns: readonly Transaction[]): Double[] {
  */
 export function certainDoubles(txns: readonly Transaction[]): Double[] {
   return findDoubles(txns).filter((d) => d.exact && d.alone && ((d.kind === 'copy' && d.copy.source === 'import' && d.days <= 6) || (d.kind === 'statement' && d.days <= 1 && d.sameName)));
-}
-
-/**
- * Old-app records nothing in the bank backs up — only from when your bank history starts, since
- * earlier ones can't be checked. Records you've confirmed as cash aren't asked about again.
- */
-export function unbackedOldRecords(txns: readonly Transaction[], doubles: readonly Double[] = findDoubles(txns)): Transaction[] {
-  const bankFrom = txns.filter(isBankRow).reduce((min, t) => (t.date < min ? t.date : min), '9999');
-  const paired = new Set(doubles.map((d) => d.copy.id));
-  return txns
-    .filter((t) => t.source === 'import' && counts(t) && t.meta.cashConfirmed !== '1' && !paired.has(t.id) && t.date >= bankFrom)
-    .sort((a, b) => b.date.localeCompare(a.date));
-}
-
-/**
- * Money in from yourself (your other bank account, your savings) counted as business income:
- * it was income once already, when it first arrived — or it was never income at all.
- */
-export function ownMoneyAsIncome(txns: readonly Transaction[], yourNames: readonly string[]): Transaction[] {
-  // Who it came from only — clients often put your name in the reference.
-  return txns.filter((t) => isBankRow(t) && t.direction === 'in' && t.bucket === 'business_income' && !t.meta.invoiceId && isYou(t.counterparty, yourNames));
 }

@@ -1,5 +1,4 @@
 import type { Invoice, Receipt, Rule, Settings, Stream, Transaction } from '../core/types';
-import type { ImportedItem } from '../core/importers';
 import type { StatementLine } from '../core/bankCsv';
 import type { FreshPlan, FreshProblem, FreshRow } from '../core/freshSheet';
 
@@ -58,7 +57,7 @@ export interface AppState {
   storage: { usedBytes: number; limitBytes: number };
   /** The Google receipt finder: whether a script key exists, and what it has sent so far. */
   google: { connected: boolean; checked: number; found: number; matched: number; lastAt: string | null };
-  config: { starling: boolean; cstl: boolean; receiptsAi: boolean; aiSort: boolean; cron: boolean };
+  config: { starling: boolean; cstl: boolean; receiptsAi: boolean; cron: boolean };
   today: string;
   /** Set once you've started fresh from your spreadsheet: it's the record up to `cutoff`. */
   fresh: { cutoff: string; at: string; canUndo: boolean } | null;
@@ -127,13 +126,9 @@ export const api = {
     call<{ receipt: Receipt; matchedTransactionId: string | null; readError: string; read: boolean }>('POST', '/api/receipts', r),
   updateReceipt: (id: string, patch: Partial<Receipt>) => call<Receipt>('PATCH', `/api/receipts/${id}`, patch),
   receiptsAside: (ids: string[], notNeeded: boolean) => call<{ changed: number }>('POST', '/api/receipts/aside', { ids, notNeeded }),
-  mergeDoubles: (pairs: { bankId: string; copyId: string }[]) => call<{ merged: number; errors: string[] }>('POST', '/api/doubles/merge', { pairs }),
-  keepBoth: (bankId: string, copyId: string) => call<{ ok: boolean }>('POST', '/api/doubles/keep-both', { bankId, copyId }),
-  oldRecords: (action: 'remove' | 'keep-cash', ids: string[]) => call<{ changed: number }>('POST', `/api/old-records/${action}`, { ids }),
   freshPreview: (dataBase64: string) => call<FreshPreview>('POST', '/api/fresh/preview', { dataBase64 }),
   freshApply: (dataBase64: string, cutoff: string) => call<{ inserted: number; removed: number; cutoff: string; streamsMade: string[]; invoices: number; receipts: number; invoicesLeftOpen: string[] }>('POST', '/api/fresh/apply', { dataBase64, cutoff }),
   freshUndo: () => call<{ restored: number; removed: number }>('POST', '/api/fresh/undo', {}),
-  applyTransfers: () => call<{ changed: number; batchId: string | null }>('POST', '/api/transfers/apply', {}),
   receiptToExpense: (id: string, body: { streamId: string | null; category?: string; date?: string; amountPence?: number; paidWith?: string }) =>
     call<Transaction>('POST', `/api/receipts/${id}/expense`, body),
   deleteReceipt: (id: string) => call<{ ok: true }>('DELETE', `/api/receipts/${id}`),
@@ -149,18 +144,12 @@ export const api = {
     call<{ events: CalendarEvent[] }>('GET', `/api/calendar/events?from=${from}&to=${to}`),
   saveSettingsWithCounter: (s: Partial<Settings> & { nextInvoiceNumber?: number }) => call<Settings>('PUT', '/api/settings', s),
 
-  aiReadReceipts: () => call<{ read: number; tried: number; remaining: number }>('POST', '/api/ai/read-receipts', {}),
   googleConnect: () => call<{ token: string; since: string }>('POST', '/api/google/connect', {}),
   googleDisconnect: () => call<{ ok: boolean }>('POST', '/api/google/disconnect', {}),
-  aiUndo: () => call<{ undone: number; kept: number; cleared: number }>('POST', '/api/ai/undo', {}),
-  aiSort: () => call<{ sorted: number; skipped: number; remaining: number }>('POST', '/api/ai/sort', {}),
 
   importBank: (b: { importId: string; account: string; kind: 'monzo' | 'bank'; lines: StatementLine[] }) =>
     call<{ added: number; sortedByRules: number; potMoves: number; already: number; unreadable: number }>('POST', '/api/import/bank', b),
   undoImport: (importId: string) => call<{ removed: number; kept: number }>('POST', `/api/imports/${importId}/undo`, {}),
-
-  importItems: (items: ImportedItem[], streamId: string | null) =>
-    call<{ linked: number; created: number; skipped: number; already: number; unreadable: number; receipts: number }>('POST', '/api/import', { items, streamId }),
 };
 
 export const receiptFileUrl = (id: string) => `/api/receipts/${id}/file`;

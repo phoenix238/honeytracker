@@ -45,7 +45,7 @@ UTC (`vercel.json`). You can always press **Sync now** on Home too.
 
 `ANTHROPIC_API_KEY` = a key from https://console.anthropic.com (the CSTL one works).
 Without it, receipts are still stored; you just type the total and date yourself.
-Optional: `RECEIPT_MODEL` / `AI_SORT_MODEL` to choose different Claude models.
+Optional: `RECEIPT_MODEL` to choose a different Claude model.
 
 If Claude calls fail with *"This API key is not scoped to a workspace"*, the key was made at
 organisation level. Either create a new key inside a workspace (console → Settings → API
@@ -64,11 +64,11 @@ address.
    (e.g. "CSTL practice", "Freelance"). Tick "CSTL session income goes here" on the
    practice one.
 2. **Home → Sync now.**
-3. **Settings → Bring in old records** → import the Honeypot0101 backup file
-   (in the old app: Settings → Export backup).
+3. **Settings → Start fresh from a spreadsheet** → download your payments, sort them on a
+   laptop, and bring the file back. Everything up to its last date is replaced by it.
 4. **Tax** → fill in "What the bank can't tell me": last year's Self Assessment bill
    (from HMRC's calculation), any PAYE job, anything already paid to HMRC.
-5. **Money → Review**: classify what's waiting. Tick "Always do this" on anything
+5. **Money → To sort**: classify what's waiting. Tick "Always do this" on anything
    regular — room hire, software, the same clients — and it sorts itself from then on.
 
 ## On your phone

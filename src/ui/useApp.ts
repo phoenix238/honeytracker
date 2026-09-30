@@ -51,20 +51,11 @@ export interface App {
   deleteInvoice: (id: string) => Promise<boolean>;
   payInvoice: (id: string, body: Parameters<typeof api.payInvoice>[1]) => Promise<boolean>;
   unpayInvoice: (id: string) => Promise<boolean>;
-  /** Progress of an AI sort in flight: rows sorted so far, and roughly how many left. */
-  aiProgress: { sorted: number; remaining: number; photos?: boolean } | null;
-  aiSortAll: () => Promise<void>;
-  /** Rewind everything the AI sorted that you haven't changed by hand. */
-  aiUndo: () => Promise<void>;
 }
 
 /** The server replaces a rule for the same payee, so the app drops its old copy too. */
 function sameRule(a: Rule, b: Rule): boolean {
   return a.field === b.field && a.direction === b.direction && a.pattern.toLowerCase() === b.pattern.toLowerCase();
-}
-
-function app_unreviewed(d: AppState | null): number {
-  return d ? d.transactions.filter((t) => t.bucket === 'unreviewed').length : 0;
 }
 
 export function useApp(): App {
@@ -75,7 +66,6 @@ export function useApp(): App {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(0);
-  const [aiProgress, setAiProgress] = useState<{ sorted: number; remaining: number; photos?: boolean } | null>(null);
   const flushing = useRef(false);
 
   const fail = useCallback((e: unknown) => {
@@ -326,48 +316,6 @@ export function useApp(): App {
         await reload();
       }
       return Boolean(res);
-    },
-    aiProgress,
-    aiSortAll: async () => {
-      setError('');
-      let sorted = 0;
-      setAiProgress({ sorted: 0, remaining: app_unreviewed(data) });
-      try {
-        // First read any photos from the old app that haven't been read, so the sorter knows
-        // what each one shows.
-        let read = 0;
-        for (;;) {
-          const p = await api.aiReadReceipts();
-          read += p.tried;
-          if (p.remaining === 0 || p.tried === 0) break;
-          setAiProgress({ sorted: read, remaining: p.remaining, photos: true });
-        }
-        setAiProgress({ sorted: 0, remaining: app_unreviewed(data) });
-        // One batch per request, until nothing's left — each request stays short.
-        for (;;) {
-          const r = await api.aiSort();
-          sorted += r.sorted;
-          setAiProgress({ sorted, remaining: r.remaining });
-          if (r.remaining === 0 || (r.sorted === 0 && r.skipped === 0)) break;
-        }
-        setNotice(`AI sorted ${sorted} line${sorted === 1 ? '' : 's'} — check them under “AI: check”.`);
-      } catch (e) {
-        fail(e);
-        if (sorted) setNotice(`AI sorted ${sorted} before stopping — you can run it again to carry on.`);
-      } finally {
-        setAiProgress(null);
-        await reload();
-      }
-    },
-    aiUndo: async () => {
-      const res = await run(() => api.aiUndo());
-      if (res) {
-        setNotice(
-          `Put back ${res.undone} line${res.undone === 1 ? '' : 's'} as they were before the AI` +
-            (res.kept ? ` — ${res.kept} you changed by hand stay as you left them.` : '.'),
-        );
-        await reload();
-      }
     },
     unpayInvoice: async (id) => {
       const res = await run(() => api.unpayInvoice(id));

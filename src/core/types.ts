@@ -250,7 +250,7 @@ export interface Settings {
   calendarUrl: string;
   /**
    * You and your work, in your own words — what you do, what you buy for it, what's personal.
-   * Every AI read (receipts, Sort with AI) gets it, so it judges costs the way you would.
+   * Every receipt the AI reads gets it, so it judges costs the way you would.
    */
   aboutMe: string;
   /**

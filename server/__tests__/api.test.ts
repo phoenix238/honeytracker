@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { handle } from '../router';
 import { setDb, pglite, migrate, type Db } from '../db';
+import { repo } from '../repo';
 import type { InvoiceLine, Transaction } from '../../src/core/types';
 
 // End-to-end through the real router and real SQL (PGlite = Postgres in WASM), with the bank
@@ -282,27 +283,6 @@ describe('receipts', () => {
   });
 });
 
-describe('import from the old app', () => {
-  it('links records to their bank twin, adds the rest once, and never duplicates', async () => {
-    await signIn();
-    feed.push(item('f1', 80, 'IN', daysAgo(20)));
-    await call('POST', '/api/sync', {});
-    const bankDate = (await call('GET', '/api/state')).data.transactions[0].date;
-    const items = [
-      { sourceId: 'honeypot:entry:e1', kind: 'income', date: bankDate, amountPence: 8000, label: 'Sarah — Session', category: null, imageDataUrl: null },
-      { sourceId: 'honeypot:entry:e2', kind: 'income', date: bankDate, amountPence: 4000, label: 'Cash client', category: null, imageDataUrl: null },
-      { sourceId: 'honeypot:receipt:r1', kind: 'expense', date: bankDate, amountPence: 999, label: 'Ryman', category: 'adminCosts', imageDataUrl: 'data:image/png;base64,AAAA' },
-    ];
-    const first = await call('POST', '/api/import', { items, streamId: null });
-    expect(first.data).toMatchObject({ linked: 1, created: 2, receipts: 1 });
-    const second = await call('POST', '/api/import', { items, streamId: null });
-    expect(second.data).toMatchObject({ linked: 0, created: 0, skipped: 3, already: 3, unreadable: 0 });
-    const { data } = await call('GET', '/api/state');
-    expect(data.transactions).toHaveLength(3);
-    expect(data.transactions.find((t: Transaction) => t.sourceId === 'f1').bucket).toBe('business_income');
-  });
-});
-
 describe('invoices', () => {
   const lines = [{ description: 'Filming, half day', quantity: 1, unitPence: 25000 }, { description: 'Edit', quantity: 2.5, unitPence: 4000 }];
 
@@ -435,79 +415,6 @@ describe('invoices', () => {
   });
 });
 
-describe('AI sorting', () => {
-  it('sorts the backlog for checking, ignores nonsense, and never overrides you', async () => {
-    await signIn();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
-    const stream = (await call('POST', '/api/streams', { name: 'Media' })).data;
-    feed.push(item('a1', 350, 'IN', daysAgo(4), { counterPartyName: 'STUDIO LTD', reference: 'INV-0017' }));
-    feed.push(item('a2', 12.99, 'OUT', daysAgo(3), { counterPartyName: 'ADOBE' }));
-    feed.push(item('a3', 42.5, 'OUT', daysAgo(2), { counterPartyName: 'TESCO' }));
-    feed.push(item('a4', 5, 'OUT', daysAgo(1), { counterPartyName: 'MYSTERY' }));
-    await call('POST', '/api/sync', {});
-    const rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
-    const id = (uid: string) => rows.find((t) => t.sourceId === uid)!.id;
-    // You sort one yourself while the AI works.
-    await call('PATCH', `/api/transactions/${id('a3')}`, { bucket: 'personal' });
-
-    aiReply = (prompt) => {
-      expect(prompt).toContain('Media'); // it's told your streams
-      return {
-        results: [
-          { id: id('a1'), bucket: 'business_income', streamId: stream.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Invoice payment' },
-          { id: id('a2'), bucket: 'business_expense', streamId: stream.id, category: 'adminCosts', businessPercent: 140, confidence: 'medium', reason: 'Software' },
-          { id: 'not-a-row', bucket: 'business_income', streamId: '', category: '', businessPercent: 100, confidence: 'high', reason: 'x' },
-          // a4 left out: the AI skipped it
-        ],
-      };
-    };
-    aiCalls = 0;
-    process.env.ANTHROPIC_WORKSPACE_ID = 'wrkspc_test';
-    const r = await call('POST', '/api/ai/sort', {});
-    expect(r.data).toMatchObject({ sorted: 2, skipped: 1, remaining: 0 });
-    expect(lastAiHeaders['anthropic-workspace-id']).toBe('wrkspc_test');
-    delete process.env.ANTHROPIC_WORKSPACE_ID;
-    const after = (await call('GET', '/api/state')).data.transactions as Transaction[];
-    const get = (uid: string) => after.find((t) => t.sourceId === uid)!;
-    expect(get('a1')).toMatchObject({ bucket: 'business_income', streamId: stream.id, classifiedBy: 'ai' });
-    expect(get('a1').meta.aiConfidence).toBe('high');
-    expect(get('a2')).toMatchObject({ category: 'adminCosts', businessPercent: 100 }); // clamped
-    expect(get('a3')).toMatchObject({ bucket: 'personal', classifiedBy: 'user' });
-    expect(get('a4').bucket).toBe('unreviewed');
-
-    // The skipped row isn't offered again, so the loop ends.
-    const again = await call('POST', '/api/ai/sort', {});
-    expect(again.data).toMatchObject({ sorted: 0, remaining: 0 });
-    expect(aiCalls).toBe(1);
-
-    // Confirming turns the AI's choice into yours.
-    await call('POST', '/api/transactions/bulk', { ids: [get('a1').id, get('a2').id], patch: {} });
-    const confirmed = (await call('GET', '/api/state')).data.transactions as Transaction[];
-    expect(confirmed.filter((t) => t.classifiedBy === 'ai')).toHaveLength(0);
-    expect(confirmed.find((t) => t.sourceId === 'a2')).toMatchObject({ bucket: 'business_expense', category: 'adminCosts' });
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-
-  it('says what to set up when there is no API key', async () => {
-    await signIn();
-    expect((await call('POST', '/api/ai/sort', {})).data.error).toContain('ANTHROPIC_API_KEY');
-  });
-});
-
-describe('import safety', () => {
-  it('never stores a non-image as a receipt, and cleans unknown categories', async () => {
-    await signIn();
-    const items = [
-      { sourceId: 'honeypot:receipt:x', kind: 'expense', date: '2026-05-01', amountPence: 500, label: 'Evil', category: 'yachts', imageDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' },
-    ];
-    const r = await call('POST', '/api/import', { items, streamId: null });
-    expect(r.data).toMatchObject({ created: 1, receipts: 0 });
-    const { data } = await call('GET', '/api/state');
-    expect(data.transactions[0].category).toBe('otherExpenses');
-    expect(data.receipts).toHaveLength(0);
-  });
-});
-
 describe('export', () => {
   it('downloads the year as CSV', async () => {
     await signIn();
@@ -521,164 +428,6 @@ describe('export', () => {
     await signIn();
     const r = await call('GET', '/api?__path=state');
     expect(r.status).toBe(200);
-  });
-});
-
-describe('AI and imported streams', () => {
-  it('picks a stream for imported records, and can re-stream an import filed under one stream', async () => {
-    await signIn();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
-    const cranio = (await call('POST', '/api/streams', { name: 'Cranio' })).data;
-    const media = (await call('POST', '/api/streams', { name: 'Media' })).data;
-    const items = [
-      { sourceId: 'honeypot:entry:1', kind: 'income', date: '2026-05-01', amountPence: 6000, label: 'Sam — session', category: null, imageDataUrl: null },
-      { sourceId: 'honeypot:entry:2', kind: 'income', date: '2026-05-02', amountPence: 25000, label: 'Studio Ltd — shoot', category: null, imageDataUrl: null },
-    ];
-    // "Sort streams later": no stream on import.
-    await call('POST', '/api/import', { items, streamId: null });
-    let rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
-    expect(rows.every((t) => t.streamId === null && t.bucket === 'business_income')).toBe(true);
-
-    const byLabel = (list: Transaction[], l: string) => list.find((t) => t.counterparty.startsWith(l))!;
-    aiReply = (prompt) => {
-      expect(prompt).toContain('needs a stream');
-      return {
-        results: [
-          { id: byLabel(rows, 'Sam').id, bucket: 'business_income', streamId: cranio.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Session' },
-          { id: byLabel(rows, 'Studio').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'high', reason: 'Shoot' },
-        ],
-      };
-    };
-    const r = await call('POST', '/api/ai/sort', {});
-    expect(r.data.sorted).toBe(2);
-    rows = (await call('GET', '/api/state')).data.transactions;
-    expect(byLabel(rows, 'Sam').streamId).toBe(cranio.id);
-    expect(byLabel(rows, 'Studio').streamId).toBe(media.id);
-
-    // An earlier import filed everything under one stream: queue it for re-streaming.
-    const items2 = [{ sourceId: 'honeypot:entry:3', kind: 'income', date: '2026-05-03', amountPence: 1500, label: 'Café — shift', category: null, imageDataUrl: null }];
-    await call('POST', '/api/import', { items: items2, streamId: cranio.id });
-    const marked = await call('POST', '/api/ai/restream-imports', {});
-    expect(marked.data.marked).toBe(1); // only the one still marked as imported
-    rows = (await call('GET', '/api/state')).data.transactions;
-    aiReply = () => ({ results: [{ id: byLabel(rows, 'Café').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'medium', reason: 'x' }] });
-    expect((await call('POST', '/api/ai/sort', {})).data.sorted).toBe(1);
-    rows = (await call('GET', '/api/state')).data.transactions;
-    expect(byLabel(rows, 'Café')).toMatchObject({ streamId: media.id, classifiedBy: 'ai' });
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-});
-
-describe('AI examples', () => {
-  it('learns from your own sorting first, then what the old app carried over', async () => {
-    const { pickExamples } = await import('../aiSort');
-    const { txn } = await import('../../src/core/__tests__/fixtures');
-    const rows = [
-      txn({ counterparty: 'RYMAN', bucket: 'business_expense', classifiedBy: 'import', streamId: 's1' }),
-      txn({ counterparty: 'ZOOM', bucket: 'business_expense', classifiedBy: 'user' }),
-      txn({ counterparty: 'TESCO', bucket: 'personal', classifiedBy: 'ai' }),
-      txn({ counterparty: 'ADOBE', bucket: 'unreviewed', classifiedBy: null }),
-    ];
-    expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['ZOOM', 'RYMAN']);
-  });
-});
-
-describe('AI examples skip imports whose stream is unknown', () => {
-  it('does not learn a stream from an import that has none or is being re-chosen', async () => {
-    const { pickExamples } = await import('../aiSort');
-    const { txn } = await import('../../src/core/__tests__/fixtures');
-    const rows = [
-      txn({ counterparty: 'A', bucket: 'business_income', classifiedBy: 'import', streamId: null }),
-      txn({ counterparty: 'B', bucket: 'business_income', classifiedBy: 'import', streamId: 's1', meta: { aiRestream: '1' } }),
-      txn({ counterparty: 'C', bucket: 'business_income', classifiedBy: 'import', streamId: 's1' }),
-    ];
-    expect(pickExamples(rows).map((t) => t.counterparty)).toEqual(['C']);
-  });
-});
-
-describe('undo AI sorting', () => {
-  it('puts every AI decision back as it was, keeps your hand edits, and never un-business an old-app record', async () => {
-    await signIn();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
-    const cranio = (await call('POST', '/api/streams', { name: 'Cranio' })).data;
-    const media = (await call('POST', '/api/streams', { name: 'Media' })).data;
-    feed.push(item('u1', 80, 'IN', daysAgo(4), { counterPartyName: 'J SMITH' }));
-    feed.push(item('u2', 30, 'OUT', daysAgo(3), { counterPartyName: 'CAFE' }));
-    feed.push(item('u3', 9, 'OUT', daysAgo(2), { counterPartyName: 'SPOTIFY' }));
-    await call('POST', '/api/sync', {});
-    // An old-app business cost, filed under Cranio at import.
-    await call('POST', '/api/import', {
-      items: [{ sourceId: 'honeypot:receipt:r1', kind: 'expense', date: '2026-05-01', amountPence: 4500, label: 'Couch roll', category: 'costOfGoods', imageDataUrl: null }],
-      streamId: cranio.id,
-    });
-    await call('POST', '/api/ai/restream-imports', {});
-    let rows = (await call('GET', '/api/state')).data.transactions as Transaction[];
-    const by = (list: Transaction[], name: string) => list.find((t) => t.counterparty === name)!;
-
-    aiReply = () => ({
-      results: [
-        { id: by(rows, 'J SMITH').id, bucket: 'business_income', streamId: media.id, category: '', businessPercent: 100, confidence: 'low', reason: 'x' },
-        { id: by(rows, 'CAFE').id, bucket: 'business_expense', streamId: media.id, category: 'travelCosts', businessPercent: 100, confidence: 'low', reason: 'x' },
-        { id: by(rows, 'SPOTIFY').id, bucket: 'personal', streamId: '', category: '', businessPercent: 100, confidence: 'high', reason: 'x' },
-        // Wrong: tries to turn the old-app business cost personal.
-        { id: by(rows, 'Couch roll').id, bucket: 'personal', streamId: '', category: '', businessPercent: 100, confidence: 'low', reason: 'x' },
-      ],
-    });
-    expect((await call('POST', '/api/ai/sort', {})).data.sorted).toBe(4);
-    rows = (await call('GET', '/api/state')).data.transactions;
-    expect(by(rows, 'Couch roll')).toMatchObject({ bucket: 'business_expense', category: 'costOfGoods', classifiedBy: 'ai' });
-
-    // You confirm everything without looking, then fix one by hand.
-    await call('POST', '/api/transactions/bulk', { ids: rows.filter((t) => t.classifiedBy === 'ai').map((t) => t.id), patch: {} });
-    await call('PATCH', `/api/transactions/${by(rows, 'CAFE').id}`, { bucket: 'personal' });
-
-    const undo = await call('POST', '/api/ai/undo', {});
-    expect(undo.data).toMatchObject({ undone: 3, kept: 1 });
-    rows = (await call('GET', '/api/state')).data.transactions;
-    expect(by(rows, 'J SMITH')).toMatchObject({ bucket: 'unreviewed', streamId: null });
-    expect(by(rows, 'J SMITH').classifiedBy).not.toBe('ai');
-    expect(by(rows, 'SPOTIFY').bucket).toBe('unreviewed');
-    expect(by(rows, 'CAFE')).toMatchObject({ bucket: 'personal', classifiedBy: 'user' }); // your hand edit stays
-    const couch = by(rows, 'Couch roll');
-    expect(couch).toMatchObject({ bucket: 'business_expense', streamId: cranio.id, category: 'costOfGoods', classifiedBy: 'import' });
-    expect(couch.meta.aiRestream).toBe('1'); // back in the queue, as before the AI ran
-    expect(rows.some((t) => t.meta.aiReason)).toBe(false);
-
-    // And the AI can run again over the same lines.
-    aiReply = () => ({ results: [] });
-    const again = await call('POST', '/api/ai/sort', {});
-    expect(again.data.skipped).toBe(3);
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-});
-
-describe('what the AI gets to read', () => {
-  it('reads old receipt photos once, then sorts with your descriptions, the photo contents and what each stream is', async () => {
-    await signIn();
-    process.env.ANTHROPIC_API_KEY = 'test-key';
-    await call('POST', '/api/streams', { name: 'Cranio', about: 'Craniosacral sessions; costs are couch roll and oils' });
-    await call('POST', '/api/streams', { name: 'Coffee', about: 'Barista shifts at Bean There' });
-    feed.push(item('p1', 45, 'OUT', daysAgo(3), { counterPartyName: 'AMAZON' }));
-    await call('POST', '/api/sync', {});
-    const png = 'data:image/png;base64,' + Buffer.from('fake-png').toString('base64');
-    await call('POST', '/api/import', {
-      items: [{ sourceId: 'honeypot:receipt:p1', kind: 'expense', date: daysAgo(3).slice(0, 10), amountPence: 4500, label: 'Massage oil bulk', category: null, imageDataUrl: png }],
-      streamId: null,
-    });
-
-    aiReply = () => ({ merchant: 'Amazon', date: '', total: '45.00', vat: '7.50', currency: 'GBP', category: 'costOfGoods', description: '5L grapeseed massage oil' });
-    const read = await call('POST', '/api/ai/read-receipts', {});
-    expect(read.data).toMatchObject({ read: 1, remaining: 0 });
-    expect((await call('POST', '/api/ai/read-receipts', {})).data.tried).toBe(0); // never read twice
-
-    let prompt = '';
-    aiReply = (p) => { prompt = p; return { results: [] }; };
-    await call('POST', '/api/ai/sort', {});
-    expect(prompt).toContain('Craniosacral sessions; costs are couch roll and oils');
-    expect(prompt).toContain('their description: "Massage oil bulk"');
-    expect(prompt).toContain('5L grapeseed massage oil');
-    expect(prompt).toContain('AMAZON');
-    delete process.env.ANTHROPIC_API_KEY;
   });
 });
 
@@ -917,6 +666,15 @@ describe('sorting in batches, and undo', () => {
 });
 
 describe('starting fresh from your own spreadsheet', () => {
+  /** A record from the old app, as its import left it (the import itself is gone). */
+  async function oldAppRecord(sourceId: string, date: string, amountPence: number, counterparty: string) {
+    const at = new Date().toISOString();
+    await repo(db).insertMany([{
+      id: `old-${sourceId}`, date, amountPence, direction: 'in', source: 'import', sourceId, counterparty, reference: '', bucket: 'business_income',
+      streamId: null, category: null, businessPercent: 100, note: '', classifiedBy: 'import', meta: {}, receiptIds: [], createdAt: at, updatedAt: at,
+    }]);
+  }
+
   async function download(prefill = true): Promise<Buffer> {
     const res = await handle(new Request(`${BASE}/api/fresh/template.xlsx${prefill ? '' : '?prefill=0'}`, { headers: { cookie } }));
     expect(res.headers.get('content-type')).toContain('spreadsheetml');
@@ -928,7 +686,7 @@ describe('starting fresh from your own spreadsheet', () => {
     await call('POST', '/api/streams', { name: 'Coffee' });
     feed.push(item('fs-1', 45.5, 'OUT', daysAgo(20), { counterPartyName: 'SHELL 334', source: 'MASTER_CARD' }));
     await call('POST', '/api/sync', {});
-    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:fs', kind: 'income', date: daysAgo(40).slice(0, 10), amountPence: 999, label: 'Old thing', category: null, imageDataUrl: null }], streamId: null });
+    await oldAppRecord('honeypot:entry:fs', daysAgo(40).slice(0, 10), 999, 'Old thing');
     const ExcelJS = (await import('exceljs')).default;
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load((await download()) as unknown as ExcelJS.Buffer);
@@ -950,7 +708,7 @@ describe('starting fresh from your own spreadsheet', () => {
     feed.push(item('fs-a', 45.5, 'OUT', daysAgo(20), { counterPartyName: 'SHELL 334', source: 'MASTER_CARD' }));
     feed.push(item('fs-b', 162, 'IN', daysAgo(15), { counterPartyName: 'ETHICAL CAFF', source: 'FASTER_PAYMENTS_IN' }));
     await call('POST', '/api/sync', {});
-    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:dup', kind: 'income', date: daysAgo(14).slice(0, 10), amountPence: 9900, label: 'Caff', category: null, imageDataUrl: null }], streamId: null });
+    await oldAppRecord('honeypot:entry:dup', daysAgo(14).slice(0, 10), 9900, 'Caff');
     const before: Transaction[] = (await call('GET', '/api/state')).data.transactions;
 
     // Fill it in on the laptop: sort both lines, add a cash payment.
@@ -989,7 +747,6 @@ describe('starting fresh from your own spreadsheet', () => {
     await call('POST', '/api/sync', {});
     state = (await call('GET', '/api/state')).data;
     expect(state.transactions.map((t: Transaction) => t.sourceId).filter((x: string) => x?.startsWith('fs-'))).toEqual(['fs-c']);
-    expect((await call('POST', '/api/import', { items: [], streamId: null })).status).toBe(400); // the old app is done
     expect(state.transactions.some((t: Transaction) => t.source === 'import')).toBe(false);
 
     const undone = (await call('POST', '/api/fresh/undo', {})).data;
@@ -1116,71 +873,17 @@ describe('bank transfers', () => {
     expect(next).toMatchObject({ bucket: 'business_expense', category: 'premisesRunningCosts' });
   });
 
-  it('switched off, leaves them to you — and sorting the waiting ones later can be undone', async () => {
+  it('switched off, leaves them to you', async () => {
     await signIn();
     await call('PUT', '/api/settings', { transfersPersonal: false });
     feed.push(item('tr-off', 25, 'OUT', daysAgo(2), { counterPartyName: 'A FRIEND', source: 'FASTER_PAYMENTS_OUT' }));
     await call('POST', '/api/sync', {});
-    const id = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.sourceId === 'tr-off').id;
-    const res = (await call('POST', '/api/transfers/apply', {})).data;
-    expect(res.changed).toBe(1);
-    let t = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === id);
-    expect(t.bucket).toBe('personal');
-    await call('POST', `/api/batches/${res.batchId}/undo`, {});
-    t = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.id === id);
+    const t = (await call('GET', '/api/state')).data.transactions.find((x: Transaction) => x.sourceId === 'tr-off');
     expect(t).toMatchObject({ bucket: 'unreviewed', classifiedBy: null });
   });
 });
 
 describe('the same money counted twice', () => {
-  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da6360000000000200010be203a50000000049454e44ae426082', 'hex').toString('base64');
-
-  it('merges an old-app copy into the bank line — note, receipt and stream move across — and a re-import doesn’t bring it back', async () => {
-    await signIn();
-    const stream = (await call('POST', '/api/streams', { name: 'Practice' })).data;
-    const date = daysAgo(12).slice(0, 10);
-    const items = [{ sourceId: 'honeypot:entry:x1', kind: 'income', date, amountPence: 6000, label: 'Lara — session', category: null, imageDataUrl: 'data:image/png;base64,' + png }];
-    expect((await call('POST', '/api/import', { items, streamId: stream.id })).data).toMatchObject({ created: 1, linked: 0 });
-    // The bank line arrives later, 9 days on — too far to merge without asking.
-    feed.push(item('late-1', 60, 'IN', daysAgo(3), { counterPartyName: 'LARA BLIGH' }));
-    expect((await call('POST', '/api/sync', {})).data.doublesMerged).toBe(0);
-    let state = (await call('GET', '/api/state')).data;
-    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'late-1');
-    const copy = state.transactions.find((t: Transaction) => t.source === 'import');
-    const res = await call('POST', '/api/doubles/merge', { pairs: [{ bankId: bankRow.id, copyId: copy.id }] });
-    expect(res.data).toEqual({ merged: 1, errors: [] });
-    state = (await call('GET', '/api/state')).data;
-    expect(state.transactions).toHaveLength(1);
-    expect(state.transactions[0]).toMatchObject({ id: bankRow.id, bucket: 'business_income', streamId: stream.id, note: 'Lara — session', meta: { importedFrom: 'honeypot:entry:x1', mergedFrom: 'import' } });
-    expect(state.receipts[0].transactionId).toBe(bankRow.id);
-    expect((await call('POST', '/api/import', { items, streamId: stream.id })).data).toMatchObject({ created: 0, already: 1 });
-  });
-
-  it('merges on its own when certain: the bank line turns up within six days, to the penny', async () => {
-    await signIn();
-    const date = daysAgo(5).slice(0, 10);
-    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:x2', kind: 'income', date, amountPence: 4200, label: 'Sam', category: null, imageDataUrl: null }], streamId: null });
-    feed.push(item('soon-1', 42, 'IN', daysAgo(3), { counterPartyName: 'SAM' }));
-    expect((await call('POST', '/api/sync', {})).data.doublesMerged).toBe(1);
-    const state = (await call('GET', '/api/state')).data;
-    expect(state.transactions.map((t: Transaction) => t.source)).toEqual(['starling']);
-  });
-
-  it('a CSTL cash session that went into the bank after all stays merged on the next sync', async () => {
-    await signIn();
-    cstlEvents.push({ bookingId: 'bx', paidAt: daysAgo(4), amountPence: 4500, method: 'cash', feedItemUid: null, paymentRef: 'AB-9', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' });
-    feed.push(item('cst-bank', 45, 'IN', daysAgo(2), { counterPartyName: 'A BROWN' }));
-    await call('POST', '/api/sync', {});
-    let state = (await call('GET', '/api/state')).data;
-    const cash = state.transactions.find((t: Transaction) => t.source === 'cstl');
-    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'cst-bank');
-    await call('POST', '/api/doubles/merge', { pairs: [{ bankId: bankRow.id, copyId: cash.id }] });
-    await call('POST', '/api/sync', {});
-    state = (await call('GET', '/api/state')).data;
-    expect(state.transactions.filter((t: Transaction) => t.source === 'cstl')).toHaveLength(0);
-    expect(state.transactions.find((t: Transaction) => t.id === bankRow.id)).toMatchObject({ bucket: 'business_income', meta: { cstlBookingId: 'bx' } });
-  });
-
   it('finds a payment brought in twice (live feed + statement file), merges it, and the statement can’t bring it back', async () => {
     await signIn();
     feed.push(item('live-1', 60, 'IN', daysAgo(5), { counterPartyName: 'LARA BLIGH' }));
@@ -1194,41 +897,6 @@ describe('the same money counted twice', () => {
     expect((await call('POST', '/api/import/bank', { importId: 'stmt-import-2', account: 'Starling CSV', kind: 'bankcsv', lines })).data).toMatchObject({ added: 0, already: 1 });
     state = (await call('GET', '/api/state')).data;
     expect(state.transactions).toHaveLength(1);
-  });
-
-  it('old-app records the bank doesn’t back up can be kept as cash or removed — and removed ones stay removed', async () => {
-    await signIn();
-    feed.push(item('any-1', 1, 'OUT', daysAgo(30)));
-    await call('POST', '/api/sync', {});
-    const items = [
-      { sourceId: 'honeypot:entry:cash1', kind: 'income', date: daysAgo(10).slice(0, 10), amountPence: 3000, label: 'Cash client', category: null, imageDataUrl: null },
-      { sourceId: 'honeypot:entry:gone1', kind: 'income', date: daysAgo(9).slice(0, 10), amountPence: 7700, label: 'Not real', category: null, imageDataUrl: null },
-    ];
-    await call('POST', '/api/import', { items, streamId: null });
-    const rows: Transaction[] = (await call('GET', '/api/state')).data.transactions;
-    const cash = rows.find((t) => t.sourceId === 'honeypot:entry:cash1')!;
-    const gone = rows.find((t) => t.sourceId === 'honeypot:entry:gone1')!;
-    expect((await call('POST', '/api/old-records/keep-cash', { ids: [cash.id] })).data.changed).toBe(1);
-    expect((await call('POST', '/api/old-records/remove', { ids: [gone.id] })).data.changed).toBe(1);
-    const after: Transaction[] = (await call('GET', '/api/state')).data.transactions;
-    expect(after.find((t) => t.id === cash.id)).toMatchObject({ meta: { cashConfirmed: '1' }, note: 'Cash (from the old app)' });
-    expect(after.find((t) => t.id === gone.id)).toBeUndefined();
-    expect((await call('POST', '/api/import', { items, streamId: null })).data).toMatchObject({ created: 0, already: 2 });
-  });
-
-  it('“two payments” keeps both, and bank lines are never merged away', async () => {
-    await signIn();
-    const date = daysAgo(11).slice(0, 10);
-    await call('POST', '/api/import', { items: [{ sourceId: 'honeypot:entry:x3', kind: 'income', date, amountPence: 5000, label: 'Jo', category: null, imageDataUrl: null }], streamId: null });
-    feed.push(item('two-1', 50, 'IN', daysAgo(3)));
-    await call('POST', '/api/sync', {});
-    const state = (await call('GET', '/api/state')).data;
-    const bankRow = state.transactions.find((t: Transaction) => t.sourceId === 'two-1');
-    const copy = state.transactions.find((t: Transaction) => t.source === 'import');
-    expect((await call('POST', '/api/doubles/merge', { pairs: [{ bankId: copy.id, copyId: bankRow.id }] })).data.merged).toBe(0);
-    await call('POST', '/api/doubles/keep-both', { bankId: bankRow.id, copyId: copy.id });
-    const after = (await call('GET', '/api/state')).data.transactions.find((t: Transaction) => t.id === copy.id);
-    expect(after.meta.notDoubleOf).toBe(bankRow.id);
   });
 });
 

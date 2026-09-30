@@ -7,17 +7,14 @@ import { extractReceipt, receiptsAiConfigured, type ReadContext } from './receip
 import { FILE_TYPES, dropGoogleToken, googleConnected, isGoogleScript, newGoogleToken, takeFoundItem, type FoundItem } from './google.js';
 import { applyRule, findRule } from '../src/core/rules.js';
 import { autoMatch } from '../src/core/receiptMatch.js';
-import { findBankTwin, type ImportedItem } from '../src/core/importers.js';
 import { ledgerCsv } from '../src/core/exportCsv.js';
 import { invoiceTotal, lateNoteFor, possiblePayments } from '../src/core/invoices.js';
 import { buildInvoicePdf } from './invoicePdf.js';
 import { booksFrom, buildFreshTemplate, freshStatus, previewFresh, startFresh, undoFresh } from './fresh.js';
-import { IMPORT_REMOVED, STATEMENT_REMOVED, keepAsCash, keepBoth, mergeCertainDoubles, mergeDouble, removeOldRecords } from './doubles.js';
+import { STATEMENT_REMOVED, mergeCertainDoubles } from './doubles.js';
 import { sortTransfer } from '../src/core/transfers.js';
-import { mkId } from '../src/core/id.js';
 import { buildWorkbook } from './workbook.js';
 import { eventsBetween, fetchCalendar } from './calendar.js';
-import { AI_SORT_BATCH, aiSortBatch, pickExamples, planAiUndo } from './aiSort.js';
 import { planBatchUndo } from './batchUndo.js';
 import { applyRules, linkInvoicePayment } from './sync.js';
 import { editCsv } from '../src/core/csvRoundTrip.js';
@@ -207,23 +204,11 @@ function profileFrom(b: Partial<BusinessProfile> | undefined, current: BusinessP
 }
 
 /** Rows the AI may decide: unsorted, business with no stream yet, or flagged to re-stream. Never yours. */
-/** Set on photos brought over from the old app until the AI has read them. */
-const IMPORTED_UNREAD = 'Imported from Honey';
-
-function needsAi(t: Transaction): boolean {
-  // Yours, or already decided by the AI and waiting for your check.
-  if (t.classifiedBy === 'user' || t.classifiedBy === 'ai') return false;
-  if (t.bucket === 'unreviewed') return true;
-  const business = t.bucket === 'business_income' || t.bucket === 'business_expense';
-  return business && (!t.streamId || t.meta.aiRestream === '1');
-}
-
 function config() {
   return {
     starling: starlingTokens().length > 0,
     cstl: cstlConfigured(),
     receiptsAi: receiptsAiConfigured(),
-    aiSort: receiptsAiConfigured(),
     cron: Boolean(process.env.CRON_SECRET?.trim()),
   };
 }
@@ -706,86 +691,6 @@ const routes: [string, RegExp, Handler][] = [
     });
   }],
 
-  // ── AI sorting ────────────────────────────────────────────────────────────────────
-  // Sorts the next batch of rows that need a decision: unreviewed rows, business rows with no
-  // stream yet (e.g. imported from the old app, which had no streams), and imported rows you've
-  // asked to have re-streamed. The app calls this repeatedly, one batch per request, so no
-  // single request runs long; each sorted row waits for your check.
-  ['POST', /^\/api\/ai\/sort$/, async (_req, r) => {
-    if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI sorting.');
-    const all = await r.listTransactions();
-    // A row the AI already looked at and skipped isn't offered again — it's yours to sort.
-    const waiting = all.filter((t) => needsAi(t) && !t.meta.aiTried);
-    const batch = waiting.slice(0, AI_SORT_BATCH);
-    if (!batch.length) return json({ sorted: 0, skipped: 0, remaining: 0 });
-    const [streams, rules, receipts] = await Promise.all([r.listStreams(), r.listRules(), r.listReceipts()]);
-    const decisions = await aiSortBatch(batch, streams, rules, pickExamples(all, 80, batch), receipts, (await r.getSettings()).aboutMe);
-    let sorted = 0;
-    for (const d of decisions) {
-      const current = all.find((t) => t.id === d.id);
-      if (!current || !needsAi(current)) continue; // you sorted it meanwhile
-      // A row already known to be business (your old app said so) only gets a stream: the AI
-      // never turns it personal or changes its category.
-      const known = current.bucket === 'business_income' || current.bucket === 'business_expense';
-      const choice = known
-        ? { bucket: current.bucket, streamId: d.streamId, category: current.category, businessPercent: current.businessPercent }
-        : { bucket: d.bucket, streamId: d.streamId, category: d.category, businessPercent: d.businessPercent };
-      await r.updateTransaction(d.id, {
-        ...choice,
-        classifiedBy: 'ai', meta: { aiReason: d.reason, aiConfidence: d.confidence, aiRestream: '' },
-      });
-      sorted++;
-    }
-    const decided = new Set(decisions.map((d) => d.id));
-    for (const t of batch) if (!decided.has(t.id)) await r.updateTransaction(t.id, { meta: { aiTried: '1', aiRestream: '' } });
-    return json({ sorted, skipped: batch.length - sorted, remaining: waiting.length - batch.length });
-  }],
-  // Read the photos that came over from the old app (they were never read), a few per request,
-  // so the sorter knows what each one actually shows. Your old description and amount are kept.
-  ['POST', /^\/api\/ai\/read-receipts$/, async (_req, r) => {
-    if (!receiptsAiConfigured()) throw new HttpError(400, 'Add ANTHROPIC_API_KEY in Vercel to use AI reading.');
-    const unread = (await r.listReceipts()).filter((x) => x.description === IMPORTED_UNREAD);
-    const batch = unread.slice(0, 4);
-    const ctx = await readContext(r);
-    const results = await Promise.all(batch.map(async (rc) => {
-      const file = await r.getReceiptFile(rc.id);
-      const got = file ? await extractReceipt(rc.mime, file.data.toString('base64'), undefined, ctx).catch(() => null) : null;
-      const shows = got ? [got.merchant, got.description].filter(Boolean).join(' — ') : '';
-      await r.updateReceipt(rc.id, got && shows
-        ? { description: `Photo shows: ${shows.slice(0, 280)}`, suggestedCategory: rc.suggestedCategory ?? got.category, vatPence: rc.vatPence ?? got.vatPence, suggestedStreamId: got.streamId, why: got.why }
-        : { description: `${IMPORTED_UNREAD} (photo unreadable)` });
-      return Boolean(got && shows);
-    }));
-    return json({ read: results.filter(Boolean).length, tried: batch.length, remaining: unread.length - batch.length });
-  }],
-  // Rewind the AI: every row it sorted goes back to how it was before, and the skipped ones
-  // are offered again. Rows you changed by hand after the AI stay as you left them.
-  ['POST', /^\/api\/ai\/undo$/, async (_req, r) => {
-    const all = await r.listTransactions();
-    const { undo, kept } = planAiUndo(all, await r.transactionUpdates());
-    for (const u of undo) await r.updateTransaction(u.id, u.patch);
-    const undone = new Set(undo.map((u) => u.id));
-    // Leftover AI marks — a skipped row, or one you've since made your own — are cleared too.
-    let cleared = 0;
-    for (const t of all) {
-      if (undone.has(t.id) || !(t.meta.aiTried || t.meta.aiReason)) continue;
-      await r.updateTransaction(t.id, { meta: { aiTried: '', aiReason: '', aiConfidence: '' } });
-      cleared++;
-    }
-    return json({ undone: undo.length, kept, cleared });
-  }],
-  // Put everything imported from the old app back through the AI to choose its stream — for
-  // when the import filed it all under one stream.
-  ['POST', /^\/api\/ai\/restream-imports$/, async (_req, r) => {
-    let marked = 0;
-    for (const t of await r.listTransactions()) {
-      if (t.classifiedBy !== 'import' || (t.bucket !== 'business_income' && t.bucket !== 'business_expense')) continue;
-      await r.updateTransaction(t.id, { meta: { aiRestream: '1', aiTried: '' } });
-      marked++;
-    }
-    return json({ marked });
-  }],
-
   // ── Google receipt finder ─────────────────────────────────────────────────────────
   // A new key for the script (the old one stops working), plus the date to search back to:
   // the start of last tax year, so anything still to go on a return is found.
@@ -799,63 +704,6 @@ const routes: [string, RegExp, Handler][] = [
 
   // ── Sync ──────────────────────────────────────────────────────────────────────────
   ['POST', /^\/api\/sync$/, async (_req, r) => json(await runSync(r))],
-
-  // ── Import from the old apps ──────────────────────────────────────────────────────
-  ['POST', /^\/api\/import$/, async (req, r) => {
-    if (await booksFrom(r)) throw new HttpError(400, 'You started fresh from your spreadsheet — the old app’s records aren’t brought in any more.');
-    const b = await body<{ items?: ImportedItem[]; streamId?: string | null }>(req);
-    const items = Array.isArray(b.items) ? b.items.slice(0, 200) : [];
-    const streamId = b.streamId ? str(b.streamId, 64) : null;
-    const bank = (await r.listTransactions()).filter(isBankRow);
-    // Bank rows already claimed by an earlier import batch stay claimed.
-    const claimed = new Set(bank.filter((t) => t.meta.importedFrom).map((t) => t.id));
-    // Records you removed because the bank didn't back them up stay removed.
-    const removed = new Set((await r.getKv<string[]>(IMPORT_REMOVED)) ?? []);
-    const out = { linked: 0, created: 0, skipped: 0, already: 0, unreadable: 0, receipts: 0 };
-    for (const it of items) {
-      if (!isDate(it.date) || !Number.isInteger(it.amountPence) || it.amountPence <= 0) { out.skipped++; out.unreadable++; continue; }
-      if (removed.has(str(it.sourceId, 120)) || (await r.findBySource('import', str(it.sourceId, 120)))) { out.skipped++; out.already++; continue; }
-      const already = bank.find((t) => t.meta.importedFrom === it.sourceId);
-      if (already) { out.skipped++; out.already++; continue; }
-      const twin = findBankTwin(it, bank, claimed);
-      const isIncome = it.kind === 'income';
-      const category = isCategory(it.category) ? it.category : 'otherExpenses';
-      let txnId: string;
-      if (twin) {
-        claimed.add(twin.id);
-        const untouched = twin.bucket === 'unreviewed';
-        await r.updateTransaction(twin.id, {
-          ...(untouched ? { bucket: isIncome ? 'business_income' : 'business_expense', streamId, category: isIncome ? null : category, classifiedBy: 'import' as const } : {}),
-          note: twin.note || str(it.label, 300),
-          meta: { importedFrom: it.sourceId },
-        });
-        txnId = twin.id;
-        out.linked++;
-      } else {
-        const created = await r.insertTransaction({
-          date: it.date, amountPence: it.amountPence, direction: isIncome ? 'in' : 'out', source: 'import', sourceId: str(it.sourceId, 120),
-          counterparty: str(it.label, 200), reference: '', bucket: isIncome ? 'business_income' : 'business_expense', streamId,
-          category: isIncome ? null : category, businessPercent: 100,
-          note: 'Imported from Honey — not found in the bank feed (cash, or another account?)', classifiedBy: 'import', meta: { importedFrom: it.sourceId },
-        });
-        if (!created) { out.skipped++; out.already++; continue; }
-        txnId = created.id;
-        out.created++;
-      }
-      // Only photos and PDFs: the stored type is served back later, so an imported
-      // "text/html" would otherwise become a page on this app's own origin.
-      const m = /^data:(image\/(?:jpeg|png|webp|gif)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(str(it.imageDataUrl, 8_000_000));
-      if (m) {
-        const saved = await r.insertReceipt(
-          { filename: `${str(it.label, 60) || 'receipt'}.jpg`, mime: m[1]!, merchant: str(it.label, 200), date: it.date, totalPence: it.amountPence, vatPence: null, suggestedCategory: isIncome ? null : category, description: IMPORTED_UNREAD, transactionId: txnId },
-          m[2]!,
-          `${it.sourceId}:image`,
-        );
-        if (saved) out.receipts++;
-      }
-    }
-    return json(out);
-  }],
 
   // ── Calendar ──────────────────────────────────────────────────────────────────────
   // Events between two dates from your calendar's private link, for turning into invoice lines.
@@ -923,37 +771,6 @@ const routes: [string, RegExp, Handler][] = [
     const doublesMerged = out.added ? await mergeCertainDoubles(r) : 0;
     return json({ ...out, doublesMerged });
   }],
-  // Sort the bank transfers already waiting, as one batch you can undo.
-  ['POST', /^\/api\/transfers\/apply$/, async (_req, r) => {
-    const names = yourNamesOf(await r.getSettings());
-    const batchId = mkId();
-    let changed = 0;
-    for (const t of await r.listTransactions()) {
-      if (t.bucket !== 'unreviewed' || t.classifiedBy || !isBankRow(t)) continue;
-      const sorted = sortTransfer(t, names);
-      if (sorted.bucket === 'unreviewed') continue;
-      await r.updateTransaction(t.id, { bucket: sorted.bucket, classifiedBy: 'rule', meta: { autoSorted: 'transfer' } }, { batchId });
-      changed++;
-    }
-    return json({ changed, batchId: changed ? batchId : null });
-  }],
-  // The same money counted twice: merge the copy into the bank's line, or say they're different.
-  ['POST', /^\/api\/doubles\/merge$/, async (req, r) => {
-    const b = await body<{ pairs?: unknown }>(req);
-    const pairs = (Array.isArray(b.pairs) ? b.pairs : []).slice(0, 500) as Record<string, unknown>[];
-    if (!pairs.length) throw new HttpError(400, 'Nothing to merge');
-    let merged = 0;
-    const errors: string[] = [];
-    for (const p of pairs) {
-      try {
-        await mergeDouble(r, str(p.bankId, 64), str(p.copyId, 64));
-        merged++;
-      } catch (e) {
-        errors.push((e as Error).message);
-      }
-    }
-    return json({ merged, errors });
-  }],
   // ── Starting fresh from your own spreadsheet ────────────────────────────────────────
   ['GET', /^\/api\/fresh\/template\.xlsx$/, async (_req, r, _p, url) => {
     const prefill = url.searchParams.get('prefill') !== '0';
@@ -990,22 +807,6 @@ const routes: [string, RegExp, Handler][] = [
     } catch (e) {
       throw new HttpError(400, (e as Error).message);
     }
-  }],
-  // Old-app records the bank doesn't back up: remove them, or keep them as cash income.
-  ['POST', /^\/api\/old-records\/(remove|keep-cash)$/, async (req, r, [action]) => {
-    const b = await body<{ ids?: unknown }>(req);
-    const ids = (Array.isArray(b.ids) ? b.ids : []).slice(0, 2000).map((x) => str(x, 64)).filter(Boolean);
-    const changed = action === 'remove' ? await removeOldRecords(r, ids) : await keepAsCash(r, ids);
-    return json({ changed });
-  }],
-  ['POST', /^\/api\/doubles\/keep-both$/, async (req, r) => {
-    const b = await body(req);
-    try {
-      await keepBoth(r, str(b.bankId, 64), str(b.copyId, 64));
-    } catch (e) {
-      throw new HttpError(404, (e as Error).message);
-    }
-    return json({ ok: true });
   }],
   // Take back a statement import: its lines go, except any you've sorted yourself since.
   ['POST', /^\/api\/imports\/([\w-]+)\/undo$/, async (_req, r, [id]) => {
