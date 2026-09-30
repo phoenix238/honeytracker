@@ -399,7 +399,10 @@ describe('invoices', () => {
     const pdf = await handle(new Request(`${BASE}/api/invoices/${inv.id}/pdf`, { headers: { cookie } }));
     expect(pdf.status).toBe(200);
     const s = (await call('GET', '/api/state')).data.settings;
-    expect(s.profile.lateNote).toMatch(/Late payments/);
+    expect(s.profile.lateNote).toMatch(/8% a year above the Bank of England base rate.*£40–£100.*Late Payment of Commercial Debts \(Interest\) Act 1998/);
+    // Saved with the earlier default wording: it's brought up to date.
+    await call('PUT', '/api/settings', { profile: { ...s.profile, lateNote: 'Please pay by the due date. Late payments may be subject to interest and a late-payment charge.' } });
+    expect((await call('GET', '/api/state')).data.settings.profile.lateNote).toBe(s.profile.lateNote);
     await call('PUT', '/api/settings', { profile: { ...s.profile, lateNote: 'Overdue invoices are charged 8% a year.' } });
     expect((await call('GET', '/api/state')).data.settings.profile.lateNote).toBe('Overdue invoices are charged 8% a year.');
   });

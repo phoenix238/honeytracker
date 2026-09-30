@@ -13,7 +13,7 @@ import type {
   Stream,
   Transaction,
 } from '../src/core/types.js';
-import { DEFAULT_PROFILE, DEFAULT_SETTINGS } from '../src/core/types.js';
+import { DEFAULT_PROFILE, DEFAULT_SETTINGS, OLD_LATE_NOTES } from '../src/core/types.js';
 import { formatInvoiceNumber } from '../src/core/invoices.js';
 import { mkId } from '../src/core/id.js';
 
@@ -345,10 +345,12 @@ export function repo(db: Db) {
     },
     async getSettings(): Promise<Settings> {
       const stored = await api.getKv<Partial<Settings>>('settings');
+      const profile = { ...DEFAULT_PROFILE, ...(stored?.profile ?? {}) };
+      if (OLD_LATE_NOTES.includes(profile.lateNote)) profile.lateNote = DEFAULT_PROFILE.lateNote;
       return {
         ...DEFAULT_SETTINGS,
         ...(stored ?? {}),
-        profile: { ...DEFAULT_PROFILE, ...(stored?.profile ?? {}) },
+        profile,
         taxYears: { ...(stored?.taxYears ?? {}) },
       };
     },

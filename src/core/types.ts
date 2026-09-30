@@ -212,9 +212,15 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   accountNumber: '',
   invoicePrefix: 'INV',
   paymentTermsDays: 14,
-  lateNote: 'Please pay by the due date. Late payments may be subject to interest and a late-payment charge.',
+  // The statutory rights only apply to business clients, so the note says so — it never claims
+  // a charge a private client didn't agree to.
+  lateNote:
+    'Payment is due by the due date above. For business clients, late payment incurs interest at 8% a year above the Bank of England base rate and a fixed compensation charge of £40–£100, under the Late Payment of Commercial Debts (Interest) Act 1998.',
   footer: 'Thank you!',
 };
+
+/** Earlier default wording, swapped for the current one unless you've written your own. */
+export const OLD_LATE_NOTES = ['Please pay by the due date. Late payments may be subject to interest and a late-payment charge.'];
 
 export interface Settings {
   name: string;
