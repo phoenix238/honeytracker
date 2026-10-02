@@ -188,6 +188,8 @@ export function useApp(): App {
       const bits = [
         r.starling.configured ? `${r.starling.newRows} new from the bank` : 'Bank not connected',
         r.cstl.configured ? `${r.cstl.matchedBank + r.cstl.cashRows} CSTL sessions matched` : '',
+        r.cstl.cashBeforeFresh ? `${r.cstl.cashBeforeFresh} CSTL cash session${r.cstl.cashBeforeFresh === 1 ? '' : 's'} from before your fresh start added` : '',
+        r.cstl.bankUnlinked ? `${r.cstl.bankUnlinked} CSTL transfer${r.cstl.bankUnlinked === 1 ? '' : 's'} to point at a bank line` : '',
         r.receiptsMatched ? `${r.receiptsMatched} receipts matched` : '',
         r.invoicesPaid ? `${r.invoicesPaid} invoice${r.invoicesPaid === 1 ? '' : 's'} paid` : '',
       ].filter(Boolean);
