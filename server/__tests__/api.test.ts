@@ -296,6 +296,38 @@ describe('CSTL', () => {
     expect(again.data.cstl.bankUnlinked).toBe(0);
   });
 
+  it('brings in CSTL cash from before your fresh start once — only cash, never twice', async () => {
+    await signIn();
+    // Your spreadsheet is the record up to 10 days ago.
+    await repo(db).setKv('books:from', { cutoff: daysAgo(10).slice(0, 10), at: new Date().toISOString() });
+    cstlEvents.push(
+      { bookingId: 'old-cash', paidAt: daysAgo(20), amountPence: 5000, method: 'cash', feedItemUid: null, paymentRef: 'AB-1', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' },
+      { bookingId: 'old-card', paidAt: daysAgo(20), amountPence: 5000, method: 'other', feedItemUid: null, paymentRef: 'AB-2', receiptNumber: '', clinic: 'Waterloo', note: 'Card' },
+      { bookingId: 'old-bank', paidAt: daysAgo(20), amountPence: 5000, method: 'bank', feedItemUid: null, paymentRef: 'AB-3', receiptNumber: '', clinic: 'Waterloo', note: '' },
+      { bookingId: 'new-cash', paidAt: daysAgo(2), amountPence: 6000, method: 'cash', feedItemUid: null, paymentRef: 'AB-4', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' },
+    );
+    const first = await call('POST', '/api/sync', {});
+    expect(first.data.cstl).toMatchObject({ cashBeforeFresh: 1, cashRows: 1 });
+    let rows = (await call('GET', '/api/state')).data.transactions.filter((t: Transaction) => t.source === 'cstl');
+    expect(rows.map((t: Transaction) => t.meta.cstlBookingId).sort()).toEqual(['new-cash', 'old-cash']);
+    expect(rows.find((t: Transaction) => t.meta.cstlBookingId === 'old-cash')).toMatchObject({ bucket: 'business_income', amountPence: 5000, meta: { method: 'cash' } });
+
+    // Once only: a cash session that turns up for before the cutoff later isn't caught up.
+    cstlEvents.push({ bookingId: 'late-old-cash', paidAt: daysAgo(15), amountPence: 4000, method: 'cash', feedItemUid: null, paymentRef: 'AB-5', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' });
+    const again = await call('POST', '/api/sync', {});
+    expect(again.data.cstl.cashBeforeFresh).toBeUndefined();
+    rows = (await call('GET', '/api/state')).data.transactions.filter((t: Transaction) => t.source === 'cstl');
+    expect(rows).toHaveLength(2);
+  });
+
+  it('does nothing before a fresh start has been made', async () => {
+    await signIn();
+    cstlEvents.push({ bookingId: 'c1', paidAt: daysAgo(3), amountPence: 5000, method: 'cash', feedItemUid: null, paymentRef: 'AB-1', receiptNumber: '', clinic: 'Waterloo', note: 'Cash' });
+    const sync = await call('POST', '/api/sync', {});
+    expect(sync.data.cstl.cashBeforeFresh).toBeUndefined();
+    expect(sync.data.cstl.cashRows).toBe(1);
+  });
+
   it('never overrides a classification you made yourself', async () => {
     await signIn();
     feed.push(item('bank-1', 80, 'IN', daysAgo(5)));

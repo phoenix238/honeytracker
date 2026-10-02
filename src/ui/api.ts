@@ -31,7 +31,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 export interface SyncResult {
   at: string;
   starling: { configured: boolean; accounts: number; newRows: number; autoClassified: number };
-  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; bankUnlinked?: number; unpricedSkipped: number; voided: number };
+  cstl: { configured: boolean; matchedBank: number; cashRows: number; otherPaid: number; bankUnlinked?: number; cashBeforeFresh?: number; unpricedSkipped: number; voided: number };
   receiptsMatched: number;
   invoicesPaid: number;
   errors: string[];
